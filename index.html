@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WAIFU WARS</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-wrapper">
+        <canvas id="gameCanvas" width="1280" height="720"></canvas>
+
+        <!-- UI Overlay -->
+        <div id="ui-layer">
+            
+            <!-- HUD (Heads Up Display) -->
+            <div id="hud" class="hidden">
+                <div class="hud-top">
+                    <div class="player-hud">
+                        <div class="name-tag">PLAYER <span class="round-wins" id="p1-wins">〇 〇</span></div>
+                        <div class="health-bar-container">
+                            <div class="health-bar-fill" id="p1-health"></div>
+                        </div>
+                        <div class="energy-bar-container">
+                            <div class="energy-bar-fill" id="p1-energy"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="timer-container">
+                        <div id="timer">60</div>
+                    </div>
+
+                    <div class="enemy-hud">
+                        <div class="name-tag right-align"><span class="round-wins" id="p2-wins">〇 〇</span> CPU</div>
+                        <div class="health-bar-container right-align">
+                            <div class="health-bar-fill enemy-fill" id="p2-health"></div>
+                        </div>
+                        <div class="energy-bar-container right-align">
+                            <div class="energy-bar-fill enemy-fill" id="p2-energy"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="combo-display" class="hidden">
+                    <span id="combo-count">2</span> HIT COMBO!
+                </div>
+                <div id="center-message" class="hidden">ROUND 1</div>
+            </div>
+
+            <!-- Main Menu -->
+            <div id="main-menu" class="screen">
+                <div class="title-container">
+                    <h1 class="glitch" data-text="WAIFU WARS">WAIFU WARS</h1>
+                    <h2>NEON BLADE SHOWDOWN</h2>
+                </div>
+                <div class="menu-buttons">
+                    <button id="btn-start" class="action-btn">START FIGHT</button>
+                    <button id="btn-controls" class="action-btn">CONTROLS</button>
+                </div>
+            </div>
+
+            <!-- Controls Screen -->
+            <div id="controls-screen" class="screen hidden">
+                <h2>COMBAT MANUAL</h2>
+                <div class="controls-grid">
+                    <div><strong>A / D</strong> : Move Left / Right</div>
+                    <div><strong>W</strong> : Jump</div>
+                    <div><strong>S</strong> : Block (Reduces Damage/Knockback)</div>
+                    <div><strong>J</strong> : Light Attack (Fast)</div>
+                    <div><strong>K</strong> : Heavy Attack (Slow, Strong)</div>
+                    <div><strong>L</strong> : Special Move (Requires Energy)</div>
+                    <div><strong>ESC</strong> : Pause Game</div>
+                </div>
+                <button id="btn-close-controls" class="action-btn">BACK</button>
+            </div>
+
+            <!-- Pause Menu -->
+            <div id="pause-menu" class="screen hidden">
+                <h2>PAUSED</h2>
+                <div class="menu-buttons">
+                    <button id="btn-resume" class="action-btn">RESUME</button>
+                    <button id="btn-quit" class="action-btn">MAIN MENU</button>
+                </div>
+            </div>
+
+            <!-- Match Result Screen -->
+            <div id="result-screen" class="screen hidden">
+                <h2 id="match-winner">PLAYER WINS</h2>
+                <div class="menu-buttons">
+                    <button id="btn-rematch" class="action-btn">REMATCH</button>
+                    <button id="btn-result-quit" class="action-btn">MAIN MENU</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
