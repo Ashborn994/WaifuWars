@@ -155,7 +155,7 @@ class Fighter {
         this.state = STATES.IDLE;
         this.stateTimer = 0;
         
-        // Combat tracking
+        // Combat tracking (independent per-fighter combo state - used by BOTH player and CPU)
         this.comboCount = 0;
         this.comboTimer = 0;
         this.attackHasHit = false;
@@ -171,6 +171,7 @@ class Fighter {
         this.hp = this.maxHp; this.energy = 0;
         this.state = STATES.IDLE;
         this.comboCount = 0;
+        this.comboTimer = 0;
         this.dir = this.isPlayer ? 1 : -1;
         this.aiJumpCooldown = 0;
     }
@@ -217,10 +218,18 @@ class Fighter {
             this.aiJumpCooldown -= dt;
         }
 
-        // Combo timer
+        // Combo timer (independent per-fighter - applies to BOTH player and CPU)
         if (this.comboTimer > 0) {
             this.comboTimer -= dt;
-            if (this.comboTimer <= 0) this.comboCount = 0;
+            if (this.comboTimer <= 0) {
+                this.comboCount = 0;
+                // Ensure the corresponding indicator is hidden once the combo naturally expires
+                if (this.isPlayer) {
+                    if (domCombo) domCombo.classList.add('hidden');
+                } else {
+                    if (domCpuCombo) domCpuCombo.classList.add('hidden');
+                }
+            }
         }
 
         // Passive Energy Gen
@@ -390,16 +399,53 @@ class Fighter {
         // Relax vertical threshold slightly for Special beam to account for airborne states cleanly
         const maxVerticalDist = (this.state === STATES.SPECIAL) ? 140 : 100;
 
-        if (dist > 0 && dist < reach && yDist < maxVerticalDist) {
+        // --- Light attack hitbox fix ---
+        // The old check only compared `reach` to the opponent's CENTER x position,
+        // ignoring that the opponent's body (width 60) extends toward the attacker.
+        // The visible slash (ctx.fillRect(20, -100, 80, 10)) reaches `reach` units
+        // in front of the attacker, so a hit should register once that slash tip
+        // reaches the opponent's near body edge - not the opponent's center.
+        // Adding half the opponent's body width closes that gap so "looks like a
+        // hit" and "registers as a hit" agree, while a real visible gap still misses.
+        // Heavy and Special are untouched and keep the original center-based check.
+        let isHit;
+        if (this.state === STATES.LIGHT) {
+            const opponentHalfWidth = opponent.width / 2; // 30 - matches opponent's body extent
+            const effectiveReach = reach + opponentHalfWidth;
+            isHit = (dist > 0 && dist < effectiveReach && yDist < maxVerticalDist);
+        } else {
+            isHit = (dist > 0 && dist < reach && yDist < maxVerticalDist);
+        }
+
+        if (isHit) {
             this.attackHasHit = true;
-            opponent.takeDamage(damage, knockback * this.dir, stunTime, hitType);
-            
-            // Combo System Update
-            if (this.isPlayer) {
+
+            // takeDamage now reports whether the hit was actually blocked, so combo
+            // logic can react to the REAL outcome instead of guessing from state.
+            const result = opponent.takeDamage(damage, knockback * this.dir, stunTime, hitType);
+
+            if (!result.blocked) {
+                // Successful (unblocked) hit -> build this fighter's combo.
                 this.comboCount++;
                 this.comboTimer = 1.0;
-                if (this.comboCount > 1) updateComboUI(this.comboCount);
-                this.energy = Math.min(100, this.energy + 10); // Gain energy on hit
+                if (this.comboCount > 1) {
+                    if (this.isPlayer) updatePlayerComboUI(this.comboCount);
+                    else updateCpuComboUI(this.comboCount);
+                }
+                // Energy-on-hit behavior is unchanged: only the player gained energy
+                // from landing hits in the original implementation.
+                if (this.isPlayer) {
+                    this.energy = Math.min(100, this.energy + 10); // Gain energy on hit
+                }
+            } else {
+                // Blocked hit -> combo is interrupted and does NOT increase.
+                this.comboCount = 0;
+                this.comboTimer = 0;
+                if (this.isPlayer) {
+                    if (domCombo) domCombo.classList.add('hidden');
+                } else {
+                    if (domCpuCombo) domCpuCombo.classList.add('hidden');
+                }
             }
         }
     }
@@ -407,9 +453,11 @@ class Fighter {
     takeDamage(amount, knockback, stunTime, type) {
         let actualDamage = amount;
         let actualKnockback = knockback;
+        let blocked = false;
 
         // Blocking logic
         if (this.state === STATES.BLOCK) {
+            blocked = true;
             actualDamage = Math.floor(amount * 0.2);
             actualKnockback = knockback * 0.1;
             playSound('block');
@@ -437,6 +485,10 @@ class Fighter {
             spawnParticles(this.x, this.y - 70, this.color, 50, 800);
             checkRoundEnd();
         }
+
+        // Report the real outcome of this hit so the attacker's combo logic
+        // can tell a blocked attack apart from a full-damage hit.
+        return { blocked, damage: actualDamage };
     }
 
     draw(ctx) {
@@ -539,6 +591,12 @@ const domComboCount = document.getElementById('combo-count');
 const domP1Wins = document.getElementById('p1-wins');
 const domP2Wins = document.getElementById('p2-wins');
 
+// CPU combo indicator - uses the #cpu-combo-display / #cpu-combo-count markup
+// already present in index.html, which shares its CSS styling with the player's
+// #combo-display via style.css (same font, size, weight, glow, padding, etc.).
+const domCpuCombo = document.getElementById('cpu-combo-display');
+const domCpuComboCount = document.getElementById('cpu-combo-count');
+
 function updateHealthUI() {
     domP1Health.style.width = `${Math.max(0, player.hp)}%`;
     domP2Health.style.width = `${Math.max(0, enemy.hp)}%`;
@@ -551,7 +609,8 @@ function updateEnergyUI() {
     domP2Energy.style.background = enemy.energy >= 100 ? '#fff' : '#00ff88';
 }
 
-function updateComboUI(count) {
+// Player combo indicator (unchanged behavior, renamed from updateComboUI for clarity)
+function updatePlayerComboUI(count) {
     domComboCount.innerText = count;
     domCombo.classList.remove('hidden');
     // Retrigger animation
@@ -561,6 +620,23 @@ function updateComboUI(count) {
     
     setTimeout(() => {
         if(player.comboCount === 0) domCombo.classList.add('hidden');
+    }, 1500);
+}
+
+// CPU combo indicator - logically separate from the player's (own element/state),
+// but visually matches it: same styling via shared CSS, same animation mechanism
+// and timing, just mirrored (slideLeft) so it moves naturally toward the center
+// from the CPU side.
+function updateCpuComboUI(count) {
+    domCpuComboCount.innerText = count;
+    domCpuCombo.classList.remove('hidden');
+    // Retrigger animation
+    domCpuCombo.style.animation = 'none';
+    domCpuCombo.offsetHeight;
+    domCpuCombo.style.animation = 'slideLeft 0.3s ease-out';
+
+    setTimeout(() => {
+        if(enemy.comboCount === 0) domCpuCombo.classList.add('hidden');
     }, 1500);
 }
 
@@ -586,6 +662,10 @@ function startRound() {
     enemy.reset(980);
     updateHealthUI();
     updateEnergyUI();
+
+    // Make sure both combo indicators start hidden each round
+    domCombo.classList.add('hidden');
+    domCpuCombo.classList.add('hidden');
     
     roundTime = 60;
     domTimer.innerText = roundTime;

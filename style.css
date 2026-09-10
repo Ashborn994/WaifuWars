@@ -228,19 +228,32 @@ h2 {
     animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-#combo-display {
+#combo-display,
+#cpu-combo-display {
     position: absolute;
     top: 40%;
-    left: 10%;
     font-size: 2.5rem;
     font-style: italic;
     font-weight: bold;
     color: #ffaa00;
     text-shadow: 2px 2px 0 #000;
+}
+
+#combo-display {
+    left: 10%;
     animation: slideRight 0.3s ease-out;
 }
 
-#combo-count {
+#cpu-combo-display {
+    left: auto;
+    right: 10%;
+    text-align: right;
+    color: var(--primary-magenta);
+    animation: slideLeft 0.3s ease-out;
+}
+
+#combo-count,
+#cpu-combo-count {
     font-size: 4rem;
     color: white;
 }
@@ -252,5 +265,10 @@ h2 {
 
 @keyframes slideRight {
     0% { transform: translateX(-50px); opacity: 0; }
+    100% { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideLeft {
+    0% { transform: translateX(50px); opacity: 0; }
     100% { transform: translateX(0); opacity: 1; }
 }
