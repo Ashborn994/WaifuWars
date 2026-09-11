@@ -35,10 +35,7 @@ window.addEventListener('keydown', e => {
     
     if (key === ' ' && !e.repeat) keys['space_trigger'] = true;
     if (key === 'p' && !e.repeat) keys['p_trigger'] = true;
-    if (key === 'a' && !e.repeat) keys['a_trigger'] = true;
-    if (key === 'd' && !e.repeat) keys['d_trigger'] = true;
-    if (key === 'arrowright' && !e.repeat) keys['arrowright_trigger'] = true;
-    if (key === 'arrowleft' && !e.repeat) keys['arrowleft_trigger'] = true;
+    if (key === 'shift' && !e.repeat) keys['shift_trigger'] = true;
     
     keys[key] = true;
     
@@ -532,6 +529,7 @@ class Fighter {
         this.aiJumpCooldown = 0;
         this.aiParryCooldown = 0;
         this.aiAttackCooldown = 0; // NEW: CPU attack cadence pacing
+        this.aiDashCooldown = 0; // NEW: CPU dash usage cooldown
     }
 
     reset(x) {
@@ -546,6 +544,7 @@ class Fighter {
         this.aiJumpCooldown = 0;
         this.aiParryCooldown = 0;
         this.aiAttackCooldown = 0;
+        this.aiDashCooldown = 0;
     }
 
     update(dt, opponent) {
@@ -605,6 +604,7 @@ class Fighter {
         if (this.aiJumpCooldown > 0) this.aiJumpCooldown -= dt;
         if (this.aiParryCooldown > 0) this.aiParryCooldown -= dt;
         if (this.aiAttackCooldown > 0) this.aiAttackCooldown -= dt;
+        if (this.aiDashCooldown > 0) this.aiDashCooldown -= dt;
 
         if (this.comboTimer > 0) {
             this.comboTimer -= dt;
@@ -635,13 +635,9 @@ class Fighter {
 
     handlePlayerInput(opponent) {
         if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE || this.state === STATES.DASH || this.state === STATES.BACKDASH) {
-            if (this.state === STATES.DASH || this.state === STATES.BACKDASH) {
-                // Lock dash direction: discard any Left/Right Arrow presses that occur
-                // while the current dash is still active, so they cannot alter or
-                // restart the in-progress dash, and cannot leak into the next dash.
-                keys['arrowright_trigger'] = false;
-                keys['arrowleft_trigger'] = false;
-            }
+            // Discard any SHIFT press made while locked in an action, so it cannot
+            // queue another dash after this one ends.
+            keys['shift_trigger'] = false;
             return;
         }
         
@@ -667,20 +663,22 @@ class Fighter {
             return;
         }
 
-        let dashed = false;
-        if (keys['arrowright_trigger'] && this.dashCooldownTimer <= 0) {
-            this.startDash(STATES.DASH);
-            dashed = true;
-        } else if (keys['arrowleft_trigger'] && this.dashCooldownTimer <= 0) {
-            this.startDash(STATES.BACKDASH);
-            dashed = true;
+        // --- DASH (SHIFT) ---
+        // Direction is decided ONCE, at the moment the dash starts: held A/D
+        // overrides it, otherwise the current facing direction is used.
+        // startDash() locks facing for the whole dash (facing is only re-derived
+        // in IDLE/WALK/BLOCK), and this early-return ignores A/D until it ends,
+        // so no input can reverse an in-progress dash.
+        if (keys['shift_trigger']) {
+            keys['shift_trigger'] = false;
+            if (this.dashCooldownTimer <= 0) {
+                if (keys['d'] && !keys['a']) this.dir = 1;
+                else if (keys['a'] && !keys['d']) this.dir = -1;
+                // Neither (or both) held: keep the current facing direction as-is.
+                this.startDash(STATES.DASH);
+                return;
+            }
         }
-        
-        keys['arrowright_trigger'] = false;
-        keys['arrowleft_trigger'] = false;
-        keys['d_trigger'] = false;
-        keys['a_trigger'] = false;
-        if (dashed) return;
 
         if (keys['a']) {
             this.vx = -400;
@@ -713,9 +711,22 @@ class Fighter {
 
         const canAttack = (this.aiAttackCooldown <= 0);
 
+        // Occasional air dash while airborne (reuses the existing dash system + cooldown)
+        if (this.y < FLOOR_Y && this.aiDashCooldown <= 0 && Math.random() < 0.06) {
+            this.dir = (opponent.x > this.x) ? 1 : -1;
+            this.startDash(STATES.DASH);
+            this.aiDashCooldown = 1.5 + Math.random() * 1.5; // ~1.5-3.0s
+            return;
+        }
+
         if (dist > 300) {
             if (dist <= 380 && canAttack && this.decideSpecialAttack(opponent)) {
                 // handled
+            } else if (this.y === FLOOR_Y && this.aiDashCooldown <= 0 && Math.random() < 0.10) {
+                // Occasional dash-in: close distance using the existing dash system
+                this.dir = (opponent.x > this.x) ? 1 : -1;
+                this.startDash(STATES.DASH);
+                this.aiDashCooldown = 1.4 + Math.random() * 1.4; // ~1.4-2.8s
             } else if (this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && Math.random() < 0.25) {
                 this.vy = -900;
                 this.state = STATES.JUMP;
@@ -726,7 +737,12 @@ class Fighter {
             }
         } else if (dist < 150) {
             const rand = Math.random();
-            if (canAttack && this.decideSpecialAttack(opponent)) {
+            if (this.y === FLOOR_Y && this.aiDashCooldown <= 0 && rand < 0.08) {
+                // Occasional backdash-out: create space using the existing dash system
+                this.dir = (opponent.x > this.x) ? 1 : -1;
+                this.startDash(STATES.BACKDASH);
+                this.aiDashCooldown = 1.2 + Math.random() * 1.2; // ~1.2-2.4s
+            } else if (canAttack && this.decideSpecialAttack(opponent)) {
                 // handled
             } else if (opponent.state === STATES.LIGHT || opponent.state === STATES.HEAVY) {
                 if (rand < 0.5) this.state = STATES.BLOCK; 
