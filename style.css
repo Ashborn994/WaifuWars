@@ -196,9 +196,31 @@ h2 {
 .energy-bar-container {
     width: 60%;
     height: 10px;
-    background: #222;
+    background-color: #222;
     margin-top: 5px;
     transform: skewX(-15deg);
+    position: relative;
+    /* Subtle tick marks at the Level 1 / Level 2 / Ultimate thresholds (33%/66%) */
+    background-image: linear-gradient(
+        to right,
+        transparent 0%, transparent calc(33% - 1px),
+        rgba(255,255,255,0.7) 33%, rgba(255,255,255,0.7) calc(33% + 1px),
+        transparent calc(33% + 1px), transparent calc(66% - 1px),
+        rgba(255,255,255,0.7) 66%, rgba(255,255,255,0.7) calc(66% + 1px),
+        transparent calc(66% + 1px)
+    );
+}
+
+.energy-bar-container.right-align {
+    /* Mirrored so the tick marks line up correctly since the enemy fill grows from the right */
+    background-image: linear-gradient(
+        to left,
+        transparent 0%, transparent calc(33% - 1px),
+        rgba(255,255,255,0.7) 33%, rgba(255,255,255,0.7) calc(33% + 1px),
+        transparent calc(33% + 1px), transparent calc(66% - 1px),
+        rgba(255,255,255,0.7) 66%, rgba(255,255,255,0.7) calc(66% + 1px),
+        transparent calc(66% + 1px)
+    );
 }
 
 .energy-bar-fill {
@@ -256,6 +278,34 @@ h2 {
 #cpu-combo-count {
     font-size: 4rem;
     color: white;
+}
+
+/* Available-special indicator (LEVEL1/LEVEL2/ULTIMATE readiness) */
+.special-ready-tag {
+    margin-top: 4px;
+    font-size: 0.85rem;
+    font-weight: bold;
+    font-style: italic;
+    letter-spacing: 1px;
+    color: #00ff88;
+    text-shadow: 0 0 6px #00ff88;
+}
+
+.special-ready-tag.level2 {
+    color: var(--primary-cyan);
+    text-shadow: 0 0 8px var(--primary-cyan);
+}
+
+.special-ready-tag.ultimate {
+    color: #fff;
+    font-size: 1rem;
+    text-shadow: 0 0 10px var(--primary-magenta), 0 0 20px var(--primary-cyan);
+    animation: ultimatePulse 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes ultimatePulse {
+    0% { transform: scale(1); opacity: 0.8; }
+    100% { transform: scale(1.12); opacity: 1; }
 }
 
 @keyframes popIn {

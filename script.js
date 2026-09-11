@@ -12,7 +12,7 @@ const GAME_HEIGHT = 720;
 const FLOOR_Y = 600;
 
 // Game State Enum
-const GAME_STATE = { MENU: 0, COUNTDOWN: 1, PLAYING: 2, PAUSED: 3, ROUND_OVER: 4, MATCH_OVER: 5 };
+const GAME_STATE = { MENU: 0, COUNTDOWN: 1, PLAYING: 2, PAUSED: 3, ROUND_OVER: 4, MATCH_OVER: 5, ULTIMATE: 6 };
 let currentState = GAME_STATE.MENU;
 let lastTime = 0;
 let animationFrameId;
@@ -24,6 +24,7 @@ let p1Wins = 0;
 let p2Wins = 0;
 let roundCount = 1;
 let cameraShake = 0;
+let ultimateData = null; // Active Ultimate cinematic sequence data (see startUltimate/updateUltimateCinematic), null when none is running
 
 // Input Handling
 const keys = {};
@@ -97,6 +98,22 @@ const playSound = (type) => {
         gainNode.gain.setValueAtTime(0.5, now);
         gainNode.gain.linearRampToValueAtTime(0.01, now + 0.5);
         osc.start(now); osc.stop(now + 0.5);
+    } else if (type === 'special2') {
+        // Level 2 Special: bigger, wider sweep than Level 1
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.linearRampToValueAtTime(1000, now + 0.6);
+        gainNode.gain.setValueAtTime(0.6, now);
+        gainNode.gain.linearRampToValueAtTime(0.01, now + 0.7);
+        osc.start(now); osc.stop(now + 0.7);
+    } else if (type === 'ultimate') {
+        // Ultimate finishing strike: the biggest, longest sweep in the game
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(100, now);
+        osc.frequency.exponentialRampToValueAtTime(1200, now + 0.9);
+        gainNode.gain.setValueAtTime(0.7, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 1.0);
+        osc.start(now); osc.stop(now + 1.0);
     }
 };
 
@@ -131,7 +148,7 @@ const spawnParticles = (x, y, color, count, speed = 500) => {
 };
 
 // --- 4. FIGHTER CLASS ---
-const STATES = { IDLE: 0, WALK: 1, JUMP: 2, LIGHT: 3, HEAVY: 4, SPECIAL: 5, BLOCK: 6, HIT: 7, DEAD: 8 };
+const STATES = { IDLE: 0, WALK: 1, JUMP: 2, LIGHT: 3, HEAVY: 4, SPECIAL_1: 5, BLOCK: 6, HIT: 7, DEAD: 8, SPECIAL_2: 9, ULTIMATE: 10 };
 
 class Fighter {
     constructor(isPlayer, x, color, accentColor) {
@@ -243,19 +260,29 @@ class Fighter {
             else this.handleAI(dt, opponent);
         }
 
-        // Hit Detection for Attacks
-        if ((this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL) && !this.attackHasHit) {
+        // Hit Detection for Attacks (ULTIMATE is intentionally excluded - its single
+        // finishing hit is applied directly by the cinematic system, see startUltimate)
+        if ((this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2) && !this.attackHasHit) {
             this.checkAttackHit(opponent);
         }
     }
 
     handlePlayerInput(opponent) {
         // Cannot interrupt attacks unless comboing, cannot move if blocking
-        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL) return;
+        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE) return;
         
         // Attack Inputs
-        if (keys['l'] && this.energy >= 100) {
-            this.attack(STATES.SPECIAL, opponent); return;
+        // L now activates the highest special/ultimate tier the fighter can afford:
+        // 100 energy -> Ultimate, 66+ -> Level 2, 33+ -> Level 1, otherwise nothing.
+        if (keys['l']) {
+            if (this.energy >= 100) {
+                this.attack(STATES.ULTIMATE, opponent); return;
+            } else if (this.energy >= 66) {
+                this.attack(STATES.SPECIAL_2, opponent); return;
+            } else if (this.energy >= 33) {
+                this.attack(STATES.SPECIAL_1, opponent); return;
+            }
+            // Insufficient energy for any tier - fall through, same as a no-op key press.
         } else if (keys['k']) {
             this.attack(STATES.HEAVY, opponent); return;
         } else if (keys['j']) {
@@ -289,7 +316,7 @@ class Fighter {
     }
 
     handleAI(dt, opponent) {
-        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL) return;
+        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE) return;
         
         this.aiTimer -= dt;
         if (this.aiTimer > 0) return; // Thinking pause
@@ -299,9 +326,9 @@ class Fighter {
 
         // AI Logic Tree
         if (dist > 300) {
-            // Check if special can be used at range (Special reach is 400)
-            if (this.energy >= 100 && dist <= 380 && Math.random() < 0.5) {
-                this.attack(STATES.SPECIAL, opponent);
+            // Check if special can be used at range (kept from original: only attempt at long range within ~380 units)
+            if (dist <= 380 && this.decideSpecialAttack(opponent)) {
+                // handled inside decideSpecialAttack
             } else if (this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && Math.random() < 0.25) {
                 this.vy = -900;
                 this.state = STATES.JUMP;
@@ -313,8 +340,8 @@ class Fighter {
         } else if (dist < 150) {
             // In combat range
             const rand = Math.random();
-            if (this.energy >= 100 && rand < 0.4) {
-                this.attack(STATES.SPECIAL, opponent);
+            if (this.decideSpecialAttack(opponent)) {
+                // handled inside decideSpecialAttack
             } else if (opponent.state === STATES.LIGHT || opponent.state === STATES.HEAVY) {
                 if (rand < 0.5) this.state = STATES.BLOCK; // Block incoming attack
                 else if (this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && rand < 0.8) {
@@ -338,8 +365,8 @@ class Fighter {
         } else {
             // Mid range
             const rand = Math.random();
-            if (this.energy >= 100 && rand < 0.4) {
-                this.attack(STATES.SPECIAL, opponent);
+            if (this.decideSpecialAttack(opponent)) {
+                // handled inside decideSpecialAttack
             } else if (opponent.y < FLOOR_Y && this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && rand < 0.4) {
                 this.vy = -900;
                 this.state = STATES.JUMP;
@@ -351,10 +378,39 @@ class Fighter {
         }
     }
 
+    // Chooses and attempts the highest-value special/ultimate the CPU can currently
+    // afford, with per-tier probabilities so it doesn't fire the instant it's
+    // available (per-branch call sites are unchanged from the original single-special
+    // AI logic - only the decision itself is now tiered). Returns true if an attack
+    // was initiated, so callers can skip their other branches exactly like before.
+    decideSpecialAttack(opponent) {
+        if (this.energy >= 100 && Math.random() < 0.6) {
+            this.attack(STATES.ULTIMATE, opponent);
+            return true;
+        }
+        if (this.energy >= 66 && Math.random() < 0.45) {
+            this.attack(STATES.SPECIAL_2, opponent);
+            return true;
+        }
+        if (this.energy >= 33 && Math.random() < 0.4) {
+            this.attack(STATES.SPECIAL_1, opponent);
+            return true;
+        }
+        return false;
+    }
+
     attack(type, opponent) {
         // Fix: Force facing direction directly toward the opponent when initiating an attack
         if (opponent) {
             this.dir = (opponent.x > this.x) ? 1 : -1;
+        }
+
+        // ULTIMATE doesn't behave like a normal timed attack state - it hands off
+        // entirely to the dedicated cinematic system (see startUltimate below),
+        // which is what freezes both fighters for the duration of the sequence.
+        if (type === STATES.ULTIMATE) {
+            startUltimate(this, opponent);
+            return;
         }
 
         this.state = type;
@@ -368,10 +424,14 @@ class Fighter {
             this.stateTimer = 0.5;
             this.vx = this.dir * 200; // slight forward momentum
             playSound('heavy');
-        } else if (type === STATES.SPECIAL) {
-            this.stateTimer = 0.8;
-            this.energy = 0;
+        } else if (type === STATES.SPECIAL_1) {
+            this.stateTimer = 0.4;
+            this.energy = Math.max(0, this.energy - 33); // Level 1 costs ~33 energy
             playSound('special');
+        } else if (type === STATES.SPECIAL_2) {
+            this.stateTimer = 0.9;
+            this.energy = Math.max(0, this.energy - 66); // Level 2 costs ~66 energy
+            playSound('special2');
         }
     }
 
@@ -387,7 +447,8 @@ class Fighter {
 
         if (this.state === STATES.LIGHT) { reach = 100; damage = 5; knockback = 150; stunTime = 0.3; activeFrameStart = 0.15; hitType = 'light';}
         if (this.state === STATES.HEAVY) { reach = 150; damage = 12; knockback = 500; stunTime = 0.5; activeFrameStart = 0.3; hitType = 'heavy';}
-        if (this.state === STATES.SPECIAL) { reach = 400; damage = 25; knockback = 800; stunTime = 0.8; activeFrameStart = 0.4; hitType = 'special';}
+        if (this.state === STATES.SPECIAL_1) { reach = 180; damage = 28; knockback = 400; stunTime = 0.35; activeFrameStart = 0.2; hitType = 'special1';}
+        if (this.state === STATES.SPECIAL_2) { reach = 450; damage = 45; knockback = 700; stunTime = 0.6; activeFrameStart = 0.5; hitType = 'special2';}
 
         // Only hit during "active frames" (end of the animation timer)
         if (this.stateTimer > activeFrameStart) return;
@@ -396,8 +457,22 @@ class Fighter {
         const dist = (opponent.x - this.x) * this.dir; // Positive if opponent is in front
         const yDist = Math.abs(opponent.y - this.y);
         
-        // Relax vertical threshold slightly for Special beam to account for airborne states cleanly
-        const maxVerticalDist = (this.state === STATES.SPECIAL) ? 140 : 100;
+        // Relax vertical threshold slightly for the Level 2 beam to account for airborne states cleanly
+        let maxVerticalDist = (this.state === STATES.SPECIAL_2) ? 140 : 100;
+
+        // --- Aerial Heavy attack vertical fix ---
+        // Heavy's swing is a downward/overhead animation, so when the attacker is
+        // airborne and swinging at a grounded opponent, `yDist` grows with jump
+        // height even though the swing visually reaches the ground. Widen the
+        // vertical tolerance for this specific case only (Heavy, attacker airborne,
+        // opponent grounded) - horizontal reach, active frames, and all other
+        // attack/matchup combinations are untouched. ~180 comfortably covers the
+        // fighter's max jump height (~162 units) without being an unbounded hitbox.
+        const attackerAirborne = this.y < FLOOR_Y;
+        const opponentGrounded = opponent.y >= FLOOR_Y;
+        if (this.state === STATES.HEAVY && attackerAirborne && opponentGrounded) {
+            maxVerticalDist = 180;
+        }
 
         // --- Light attack hitbox fix ---
         // The old check only compared `reach` to the opponent's CENTER x position,
@@ -432,11 +507,8 @@ class Fighter {
                     if (this.isPlayer) updatePlayerComboUI(this.comboCount);
                     else updateCpuComboUI(this.comboCount);
                 }
-                // Energy-on-hit behavior is unchanged: only the player gained energy
-                // from landing hits in the original implementation.
-                if (this.isPlayer) {
-                    this.energy = Math.min(100, this.energy + 10); // Gain energy on hit
-                }
+                // Energy-on-hit now applies to both fighters (previously player-only).
+                this.energy = Math.min(100, this.energy + 10); // Gain energy on hit
             } else {
                 // Blocked hit -> combo is interrupted and does NOT increase.
                 this.comboCount = 0;
@@ -469,7 +541,11 @@ class Fighter {
             playSound('hit');
             spawnParticles(this.x, this.y - 70, this.accentColor, 20, 600);
             
-            if (type === 'heavy' || type === 'special') cameraShake = 0.3;
+            // Graduated shake: Heavy/Level1 keep the original intensity, Level2 is
+            // stronger, and the Ultimate finishing hit is the strongest in the game.
+            if (type === 'heavy' || type === 'special1') cameraShake = Math.max(cameraShake, 0.3);
+            else if (type === 'special2') cameraShake = Math.max(cameraShake, 0.45);
+            else if (type === 'ultimate') cameraShake = Math.max(cameraShake, 0.6);
         }
 
         this.hp -= actualDamage;
@@ -559,13 +635,29 @@ class Fighter {
                 const swingPhase = this.stateTimer / 0.5; // 1 to 0
                 ctx.rotate(swingPhase * Math.PI - Math.PI/4);
                 ctx.fillRect(0, -140, 20, 120);
-            } else if (this.state === STATES.SPECIAL) {
-                // Giant Laser/Energy Beam
+            } else if (this.state === STATES.SPECIAL_1) {
+                // Level 1: fast, short-range energy strike - a brighter, longer slash
                 ctx.fillStyle = this.accentColor;
-                ctx.globalAlpha = 0.8;
-                ctx.fillRect(30, -120, 500, 60);
+                ctx.globalAlpha = 0.9;
+                ctx.fillRect(20, -110, 160, 20);
                 ctx.fillStyle = '#fff';
-                ctx.fillRect(30, -100, 500, 20);
+                ctx.fillRect(20, -102, 160, 4);
+                ctx.globalAlpha = 1.0;
+            } else if (this.state === STATES.SPECIAL_2) {
+                // Level 2: large energy beam - bigger and brighter than Level 1
+                ctx.fillStyle = this.accentColor;
+                ctx.globalAlpha = 0.85;
+                ctx.fillRect(30, -140, 420, 90);
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(30, -110, 420, 30);
+                ctx.globalAlpha = 1.0;
+            } else if (this.state === STATES.ULTIMATE) {
+                // Sword held ready during the cinematic. The dash/slash/finish visuals
+                // themselves are drawn by drawUltimateOverlay(); this just keeps the
+                // base silhouette sensible if the cinematic ends abruptly (e.g. a KO).
+                ctx.fillStyle = this.accentColor;
+                ctx.globalAlpha = 0.9;
+                ctx.fillRect(15, -130, 90, 8);
                 ctx.globalAlpha = 1.0;
             }
         }
@@ -577,6 +669,185 @@ class Fighter {
 // Instantiate Fighters (isPlayer, x, color, accentColor)
 const player = new Fighter(true, 300, '#222', '#00f3ff');
 const enemy = new Fighter(false, 980, '#222', '#ff00ea');
+
+// --- 4b. ULTIMATE CINEMATIC SYSTEM (LEVEL 3) ---
+// Fully separate from the normal per-fighter update/attack flow. While
+// `currentState === GAME_STATE.ULTIMATE`, the main update() dispatcher (see below)
+// calls ONLY updateUltimateCinematic() instead of player.update()/enemy.update(),
+// which is what freezes both fighters (movement, input, AI, and further attacks -
+// including a second Ultimate) for the whole sequence. Damage is applied exactly
+// once, at the scripted "finish" beat, via the normal takeDamage() so blocking,
+// knockback, and combo rules all still apply.
+
+// Fixed timeline (seconds from activation). Each beat fires exactly once, in
+// order, as `timer` passes its `t` value - this keeps the sequence exact
+// regardless of frame rate rather than relying on continuous range checks.
+const ULTIMATE_TIMELINE = [
+    { t: 0.30, action: 'dash' },
+    { t: 0.50, action: 'slash1' },
+    { t: 0.70, action: 'slash2' },
+    { t: 0.90, action: 'slash3' },
+    { t: 1.10, action: 'rapid' },
+    { t: 1.80, action: 'reposition' },
+    { t: 2.00, action: 'finish' },
+    { t: 2.70, action: 'end' },
+];
+const ULTIMATE_DAMAGE = 80; // Strongest attack in the game; still routed through takeDamage() so blocking applies
+
+function startUltimate(attacker, opponent) {
+    if (currentState === GAME_STATE.ULTIMATE) return; // Guard against re-entrancy/double activation
+
+    attacker.state = STATES.ULTIMATE;
+    attacker.stateTimer = 0;
+    attacker.attackHasHit = false;
+    attacker.vx = 0;
+    attacker.vy = 0;
+    attacker.energy = 0; // Ultimate always consumes all 100 energy, immediately
+
+    ultimateData = {
+        attacker,
+        opponent,
+        timer: 0,
+        nextBeat: 0,
+        origAttackerDir: attacker.dir,
+        origOpponentX: opponent.x,
+    };
+
+    currentState = GAME_STATE.ULTIMATE;
+}
+
+function endUltimateCinematic() {
+    const u = ultimateData;
+    if (u) {
+        const attacker = u.attacker;
+        attacker.state = STATES.IDLE;
+        attacker.stateTimer = 0;
+        attacker.attackHasHit = false;
+        // Safety clamp: keep the attacker's cinematic-repositioned x within the
+        // arena, mirroring the normal boundary clamp in Fighter.update().
+        attacker.x = Math.max(30, Math.min(GAME_WIDTH - 30, attacker.x));
+    }
+    ultimateData = null;
+    // Only resume normal play if nothing else (e.g. a KO via checkRoundEnd) has
+    // already moved the game to a different state - a KO takes priority.
+    if (currentState === GAME_STATE.ULTIMATE) {
+        currentState = GAME_STATE.PLAYING;
+    }
+}
+
+function updateUltimateCinematic(dt) {
+    // Safety net: if the state changed out from under us (e.g. the finishing hit
+    // KO'd the opponent and checkRoundEnd() already took over), stop immediately
+    // rather than continuing to drive a cinematic that's no longer relevant.
+    if (currentState !== GAME_STATE.ULTIMATE || !ultimateData) {
+        ultimateData = null;
+        return;
+    }
+
+    const u = ultimateData;
+    const attacker = u.attacker;
+    const opponent = u.opponent;
+    const dir = u.origAttackerDir;
+    u.timer += dt;
+
+    while (u.nextBeat < ULTIMATE_TIMELINE.length && u.timer >= ULTIMATE_TIMELINE[u.nextBeat].t) {
+        const action = ULTIMATE_TIMELINE[u.nextBeat].action;
+        u.nextBeat++;
+
+        if (action === 'dash') {
+            playSound('special');
+        } else if (action === 'slash1' || action === 'slash2' || action === 'slash3') {
+            playSound('light');
+            spawnParticles(opponent.x - dir * 20, opponent.y - 80, attacker.accentColor, 15, 500);
+            cameraShake = Math.max(cameraShake, 0.15);
+        } else if (action === 'rapid') {
+            playSound('heavy');
+        } else if (action === 'reposition') {
+            attacker.dir = -dir; // Now attacking from behind, toward the opponent
+        } else if (action === 'finish') {
+            // The single, intentional damage moment - never applied more than once
+            // because this 'finish' beat can only fire one time per cinematic.
+            playSound('ultimate');
+            const result = opponent.takeDamage(ULTIMATE_DAMAGE, 1000 * dir, 0.8, 'ultimate');
+
+            if (!result.blocked) {
+                attacker.comboCount++;
+                attacker.comboTimer = 1.0;
+                if (attacker.comboCount > 1) {
+                    if (attacker.isPlayer) updatePlayerComboUI(attacker.comboCount);
+                    else updateCpuComboUI(attacker.comboCount);
+                }
+            } else {
+                attacker.comboCount = 0;
+                attacker.comboTimer = 0;
+                if (attacker.isPlayer) { if (domCombo) domCombo.classList.add('hidden'); }
+                else { if (domCpuCombo) domCpuCombo.classList.add('hidden'); }
+            }
+            spawnParticles(opponent.x, opponent.y - 70, attacker.accentColor, 60, 900);
+        } else if (action === 'end') {
+            endUltimateCinematic();
+            return; // ultimateData is now cleared - nothing left to do this frame
+        }
+    }
+
+    // Continuous motion between beats (dash in / reposition behind the opponent)
+    if (u.timer >= 0.30 && u.timer < 0.50) {
+        const t = Math.min(1, (u.timer - 0.30) / 0.20);
+        const targetX = u.origOpponentX - dir * 80;
+        // Use the attacker's position at cinematic start (captured lazily) to interpolate smoothly
+        if (u._dashFromX === undefined) u._dashFromX = attacker.x;
+        attacker.x = u._dashFromX + (targetX - u._dashFromX) * t;
+        spawnParticles(attacker.x, attacker.y - 70, attacker.accentColor, 1, 250);
+    } else if (u.timer >= 1.80 && u.timer < 2.00) {
+        const t = Math.min(1, (u.timer - 1.80) / 0.20);
+        const startX = u.origOpponentX - dir * 80;
+        const behindX = u.origOpponentX + dir * 60;
+        attacker.x = startX + (behindX - startX) * t;
+    }
+}
+
+function drawUltimateOverlay(ctx) {
+    if (!ultimateData) return;
+    const t = ultimateData.timer;
+    const attacker = ultimateData.attacker;
+    const accent = attacker.accentColor;
+
+    ctx.save();
+
+    // Darkened background to focus attention on the fighters
+    let darken = 0;
+    if (t < 0.3) darken = (t / 0.3) * 0.5;
+    else if (t < 2.3) darken = 0.5;
+    else if (t < 2.7) darken = 0.5 * (1 - (t - 2.3) / 0.4);
+    if (darken > 0) {
+        ctx.fillStyle = `rgba(0,0,0,${darken.toFixed(2)})`;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+
+    // Screen flash at the finishing-slash moment
+    if (t >= 2.0 && t < 2.15) {
+        const flashAlpha = 1 - (t - 2.0) / 0.15;
+        ctx.fillStyle = `rgba(255,255,255,${(flashAlpha * 0.8).toFixed(2)})`;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+
+    // Dramatic callout text during the slash sequence
+    if (t >= 0.5 && t < 1.8) {
+        const fadeIn = Math.min(1, (t - 0.5) * 4);
+        const fadeOut = t > 1.6 ? Math.max(0, (1.8 - t) * 5) : 1;
+        ctx.fillStyle = accent;
+        ctx.font = 'italic bold 64px Trebuchet MS, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.shadowColor = accent;
+        ctx.shadowBlur = 20;
+        ctx.globalAlpha = fadeIn * fadeOut;
+        ctx.fillText((attacker.isPlayer ? 'PLAYER' : 'CPU') + ' ULTIMATE!', GAME_WIDTH / 2, 140);
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
+}
 
 // --- 5. UI & MATCH MANAGEMENT ---
 
@@ -597,6 +868,11 @@ const domP2Wins = document.getElementById('p2-wins');
 const domCpuCombo = document.getElementById('cpu-combo-display');
 const domCpuComboCount = document.getElementById('cpu-combo-count');
 
+// Available-special indicators (LEVEL1/LEVEL2/ULTIMATE readiness) - optional
+// elements; updateSpecialTag() no-ops safely if either is missing from the HTML.
+const domP1SpecialTag = document.getElementById('p1-special-tag');
+const domP2SpecialTag = document.getElementById('p2-special-tag');
+
 function updateHealthUI() {
     domP1Health.style.width = `${Math.max(0, player.hp)}%`;
     domP2Health.style.width = `${Math.max(0, enemy.hp)}%`;
@@ -607,6 +883,30 @@ function updateEnergyUI() {
     domP1Energy.style.background = player.energy >= 100 ? '#fff' : '#00ff88';
     domP2Energy.style.width = `${enemy.energy}%`;
     domP2Energy.style.background = enemy.energy >= 100 ? '#fff' : '#00ff88';
+
+    // Available-special indicator: shows the strongest move each fighter can
+    // currently afford, mirroring the 33/66/100 energy thresholds.
+    updateSpecialTag(domP1SpecialTag, player.energy);
+    updateSpecialTag(domP2SpecialTag, enemy.energy);
+}
+
+function updateSpecialTag(tagEl, energy) {
+    if (!tagEl) return;
+    tagEl.classList.remove('level2', 'ultimate');
+    if (energy >= 100) {
+        tagEl.innerText = 'ULTIMATE READY';
+        tagEl.classList.add('ultimate');
+        tagEl.classList.remove('hidden');
+    } else if (energy >= 66) {
+        tagEl.innerText = 'SUPER READY';
+        tagEl.classList.add('level2');
+        tagEl.classList.remove('hidden');
+    } else if (energy >= 33) {
+        tagEl.innerText = 'SPECIAL READY';
+        tagEl.classList.remove('hidden');
+    } else {
+        tagEl.classList.add('hidden');
+    }
 }
 
 // Player combo indicator (unchanged behavior, renamed from updateComboUI for clarity)
@@ -801,6 +1101,11 @@ function update(dt) {
         player.update(dt, enemy);
         enemy.update(dt, player);
         updateEnergyUI();
+    } else if (currentState === GAME_STATE.ULTIMATE) {
+        // Normal player/CPU update is intentionally skipped here - this is what
+        // freezes both fighters for the duration of the Ultimate cinematic.
+        updateUltimateCinematic(dt);
+        updateEnergyUI();
     }
     
     particles.forEach(p => p.update(dt));
@@ -818,6 +1123,20 @@ function draw() {
         ctx.translate((Math.random()-0.5)*shakeMag, (Math.random()-0.5)*shakeMag);
     }
 
+    // Ultimate cinematic: subtle zoom toward the fighters for a "finisher" feel
+    if (currentState === GAME_STATE.ULTIMATE && ultimateData) {
+        const t = ultimateData.timer;
+        let zoom = 1;
+        if (t < 0.3) zoom = 1 + (t / 0.3) * 0.15;
+        else if (t < 2.3) zoom = 1.15;
+        else if (t < 2.7) zoom = 1.15 - ((t - 2.3) / 0.4) * 0.15;
+        const midX = (ultimateData.attacker.x + ultimateData.opponent.x) / 2;
+        const midY = FLOOR_Y - 80;
+        ctx.translate(midX, midY);
+        ctx.scale(zoom, zoom);
+        ctx.translate(-midX, -midY);
+    }
+
     drawBackground();
     
     // Draw entities
@@ -828,6 +1147,10 @@ function draw() {
     particles.forEach(p => p.draw(ctx));
 
     ctx.restore();
+
+    if (currentState === GAME_STATE.ULTIMATE) {
+        drawUltimateOverlay(ctx);
+    }
 }
 
 function gameLoop(timestamp) {
