@@ -24,37 +24,40 @@ let p1Wins = 0;
 let p2Wins = 0;
 let roundCount = 1;
 let cameraShake = 0;
-let ultimateData = null; // Active Ultimate cinematic sequence data (see startUltimate/updateUltimateCinematic), null when none is running
+let ultimateData = null; 
+let hitStopTimer = 0; 
 
 // Input Handling
 const keys = {};
 window.addEventListener('keydown', e => {
     let key = e.key.toLowerCase();
-    if (e.code === 'Space') key = ' '; // Normalize spacebar just in case
+    if (e.code === 'Space') key = ' '; 
     
-    // Prevent spacebar from holding/repeating jump
-    if (key === ' ' && !e.repeat) {
-        keys['space_trigger'] = true;
-    }
+    if (key === ' ' && !e.repeat) keys['space_trigger'] = true;
+    if (key === 'p' && !e.repeat) keys['p_trigger'] = true;
+    if (key === 'a' && !e.repeat) keys['a_trigger'] = true;
+    if (key === 'd' && !e.repeat) keys['d_trigger'] = true;
+    if (key === 'arrowright' && !e.repeat) keys['arrowright_trigger'] = true;
+    if (key === 'arrowleft' && !e.repeat) keys['arrowleft_trigger'] = true;
     
     keys[key] = true;
     
     if (e.key === 'Escape' && currentState === GAME_STATE.PLAYING) pauseGame();
     else if (e.key === 'Escape' && currentState === GAME_STATE.PAUSED) resumeGame();
     
-    // Prevent scrolling for game keys (Spacebar is included here as ' ')
-    if(['w','a','s','d','j','k','l',' '].includes(key)) e.preventDefault();
+    if(['w','a','s','d','j','k','l','p',' ','shift','arrowleft','arrowright'].includes(key)) e.preventDefault();
 });
 
 window.addEventListener('keyup', e => {
     let key = e.key.toLowerCase();
-    if (e.code === 'Space') key = ' '; // Normalize spacebar just in case
+    if (e.code === 'Space') key = ' '; 
     
     keys[key] = false;
     if (key === ' ') keys['space_trigger'] = false;
+    if (key === 'p') keys['p_trigger'] = false;
 });
 
-// --- 2. AUDIO SYSTEM (Web Audio API) ---
+// --- 2. AUDIO SYSTEM ---
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 const playSound = (type) => {
     if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -99,7 +102,6 @@ const playSound = (type) => {
         gainNode.gain.linearRampToValueAtTime(0.01, now + 0.5);
         osc.start(now); osc.stop(now + 0.5);
     } else if (type === 'special2') {
-        // Level 2 Special: bigger, wider sweep than Level 1
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(150, now);
         osc.frequency.linearRampToValueAtTime(1000, now + 0.6);
@@ -107,25 +109,64 @@ const playSound = (type) => {
         gainNode.gain.linearRampToValueAtTime(0.01, now + 0.7);
         osc.start(now); osc.stop(now + 0.7);
     } else if (type === 'ultimate') {
-        // Ultimate finishing strike: the biggest, longest sweep in the game
         osc.type = 'square';
         osc.frequency.setValueAtTime(100, now);
         osc.frequency.exponentialRampToValueAtTime(1200, now + 0.9);
         gainNode.gain.setValueAtTime(0.7, now);
         gainNode.gain.exponentialRampToValueAtTime(0.01, now + 1.0);
         osc.start(now); osc.stop(now + 1.0);
+    } else if (type === 'parry') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1600, now);
+        osc.frequency.exponentialRampToValueAtTime(520, now + 0.12);
+        gainNode.gain.setValueAtTime(0.5, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.14);
+        osc.start(now); osc.stop(now + 0.14);
+        const osc2 = audioCtx.createOscillator();
+        const g2 = audioCtx.createGain();
+        osc2.type = 'square';
+        osc2.connect(g2);
+        g2.connect(audioCtx.destination);
+        osc2.frequency.setValueAtTime(2400, now);
+        osc2.frequency.exponentialRampToValueAtTime(380, now + 0.07);
+        g2.gain.setValueAtTime(0.2, now);
+        g2.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+        osc2.start(now); osc2.stop(now + 0.08);
+    } else if (type === 'dash') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(400, now);
+        osc.frequency.exponentialRampToValueAtTime(100, now + 0.15);
+        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+        osc.start(now); osc.stop(now + 0.15);
+    } else if (type === 'backdash') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(80, now + 0.15);
+        gainNode.gain.setValueAtTime(0.2, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+        osc.start(now); osc.stop(now + 0.15);
     }
 };
 
 // --- 3. PARTICLE SYSTEM ---
 class Particle {
-    constructor(x, y, color, speed, size, life) {
+    constructor(x, y, color, speed, size, life, angle = null, spread = Math.PI * 2, shape = 'square') {
         this.x = x; this.y = y; this.color = color;
-        this.vx = (Math.random() - 0.5) * speed;
-        this.vy = (Math.random() - 0.5) * speed;
+        if (angle === null) {
+            this.vx = (Math.random() - 0.5) * speed;
+            this.vy = (Math.random() - 0.5) * speed;
+        } else {
+            const a = angle + (Math.random() - 0.5) * spread;
+            const mag = speed * (0.5 + Math.random() * 0.5);
+            this.vx = Math.cos(a) * mag;
+            this.vy = Math.sin(a) * mag;
+        }
         this.size = size;
         this.life = life;
         this.maxLife = life;
+        this.shape = shape; 
+        this.angle = Math.atan2(this.vy, this.vx);
     }
     update(dt) {
         this.x += this.vx * dt;
@@ -135,20 +176,332 @@ class Particle {
     draw(ctx) {
         ctx.globalAlpha = Math.max(0, this.life / this.maxLife);
         ctx.fillStyle = this.color;
-        ctx.fillRect(this.x, this.y, this.size, this.size);
+        if (this.shape === 'spark') {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.angle);
+            ctx.fillRect(-this.size * 1.5, -this.size * 0.25, this.size * 3, this.size * 0.5);
+            ctx.restore();
+        } else {
+            ctx.fillRect(this.x, this.y, this.size, this.size);
+        }
         ctx.globalAlpha = 1.0;
     }
 }
 let particles = [];
 const spawnParticles = (x, y, color, count, speed = 500) => {
     for(let i=0; i<count; i++) {
-        if(particles.length > 150) break; // Cap particles
+        if(particles.length > 200) break; 
         particles.push(new Particle(x, y, color, speed, Math.random()*4+2, Math.random()*0.3+0.2));
     }
 };
 
+const spawnDirectionalParticles = (x, y, color, count, angle, spread, speedMin, speedMax, sizeMin, sizeMax, lifeMin, lifeMax, shape = 'square') => {
+    for (let i = 0; i < count; i++) {
+        if (particles.length > 200) break; 
+        const speed = speedMin + Math.random() * (speedMax - speedMin);
+        const size = sizeMin + Math.random() * (sizeMax - sizeMin);
+        const life = lifeMin + Math.random() * (lifeMax - lifeMin);
+        particles.push(new Particle(x, y, color, speed, size, life, angle, spread, shape));
+    }
+};
+
+// --- IMPACT VFX SYSTEM (V2) ---
+let impactEffects = [];
+
+function withAlpha(color, a) {
+    if (!color) return `rgba(255,255,255,${a})`;
+    if (color[0] === '#' && (color.length === 7 || color.length === 4)) {
+        let r, g, b;
+        if (color.length === 7) {
+            r = parseInt(color.slice(1, 3), 16);
+            g = parseInt(color.slice(3, 5), 16);
+            b = parseInt(color.slice(5, 7), 16);
+        } else {
+            r = parseInt(color[1] + color[1], 16);
+            g = parseInt(color[2] + color[2], 16);
+            b = parseInt(color[3] + color[3], 16);
+        }
+        return `rgba(${r},${g},${b},${a})`;
+    }
+    return color;
+}
+
+function spawnImpactFlash(x, y, radius, color, life, delay = 0, startScale = 0.4) {
+    impactEffects.push({ type: 'flash', x, y, radius, color, life, maxLife: life, delay, startScale });
+}
+function spawnImpactRing(x, y, startRadius, endRadius, color, life, lineWidth = 3, delay = 0) {
+    impactEffects.push({ type: 'ring', x, y, startRadius, endRadius, color, life, maxLife: life, lineWidth, delay });
+}
+function spawnScreenFlash(color, life, peakAlpha) {
+    impactEffects.push({ type: 'screenFlash', color, life, maxLife: life, peakAlpha, delay: 0 });
+}
+function spawnImpactCore(x, y, startR, peakR, color, life, shape = 'circle', delay = 0) {
+    impactEffects.push({ type: 'core', x, y, startR, peakR, color, life, maxLife: life, shape, delay });
+}
+function spawnImpactLines(x, y, color, life, count, innerMin, innerMax, lenMin, lenMax, widthMin, widthMax, dirAngle, spread) {
+    const lines = [];
+    for (let i = 0; i < count; i++) {
+        const angle = dirAngle + (Math.random() - 0.5) * spread;
+        const inner = innerMin + Math.random() * (innerMax - innerMin);
+        const len = lenMin + Math.random() * (lenMax - lenMin);
+        const width = widthMin + Math.random() * (widthMax - widthMin);
+        lines.push({ angle, inner, outer: inner + len, width });
+    }
+    impactEffects.push({ type: 'lines', x, y, lines, color, life, maxLife: life, delay: 0 });
+}
+
+function updateImpactEffects(dt) {
+    impactEffects.forEach(e => {
+        if (e.delay && e.delay > 0) {
+            e.delay -= dt;
+            return;
+        }
+        e.life -= dt;
+        if (e.type === 'residue') {
+            e.x += (e.vx || 0) * dt;
+            e.y += (e.vy || 0) * dt;
+        }
+    });
+    impactEffects = impactEffects.filter(e => e.life > 0);
+}
+
+function drawStarBurst(ctx, x, y, r, points) {
+    ctx.beginPath();
+    const step = Math.PI / points;
+    for (let i = 0; i < points * 2; i++) {
+        const rad = (i % 2 === 0) ? r : r * 0.38;
+        const a = i * step - Math.PI / 2;
+        const px = x + Math.cos(a) * rad;
+        const py = y + Math.sin(a) * rad;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawDiamond(ctx, x, y, r) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x + r * 0.7, y);
+    ctx.lineTo(x, y + r);
+    ctx.lineTo(x - r * 0.7, y);
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawImpactEffects(ctx) {
+    impactEffects.forEach(e => {
+        if (e.type === 'screenFlash') return;
+        if (e.delay && e.delay > 0) return;
+        const alpha = Math.max(0, e.life / e.maxLife);
+        const elapsed = 1 - alpha;
+
+        if (e.type === 'flash') {
+            const pop = Math.min(1, elapsed * 5);
+            const r = e.radius * ((e.startScale || 0.4) + (1 - (e.startScale || 0.4)) * pop);
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = e.color;
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (e.type === 'ring') {
+            const progress = elapsed; 
+            const radius = e.startRadius + (e.endRadius - e.startRadius) * progress;
+            ctx.globalAlpha = alpha * 0.95;
+            ctx.strokeStyle = e.color;
+            ctx.lineWidth = Math.max(1, e.lineWidth * (0.25 + 0.75 * alpha));
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, radius, 0, Math.PI * 2);
+            ctx.stroke();
+        } else if (e.type === 'core') {
+            let r;
+            if (elapsed < 0.22) {
+                const k = elapsed / 0.22;
+                const ease = 1 - (1 - k) * (1 - k);
+                r = e.startR + (e.peakR - e.startR) * ease;
+            } else {
+                r = e.peakR * (0.65 + 0.35 * alpha);
+            }
+            ctx.globalAlpha = Math.min(1, alpha * 1.25);
+            ctx.fillStyle = e.color;
+            if (e.shape === 'star') {
+                drawStarBurst(ctx, e.x, e.y, r, 8);
+            } else if (e.shape === 'diamond') {
+                drawDiamond(ctx, e.x, e.y, r);
+            } else {
+                ctx.beginPath();
+                ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, r * 0.42, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (e.type === 'lines') {
+            const expand = 1 + elapsed * 0.55;
+            ctx.strokeStyle = e.color;
+            ctx.lineCap = 'round';
+            e.lines.forEach(ln => {
+                ctx.globalAlpha = alpha * 0.95;
+                ctx.lineWidth = ln.width * (0.35 + 0.65 * alpha);
+                const inner = ln.inner * expand;
+                const outer = ln.outer * expand;
+                ctx.beginPath();
+                ctx.moveTo(e.x + Math.cos(ln.angle) * inner, e.y + Math.sin(ln.angle) * inner);
+                ctx.lineTo(e.x + Math.cos(ln.angle) * outer, e.y + Math.sin(ln.angle) * outer);
+                ctx.stroke();
+            });
+        } else if (e.type === 'residue') {
+            ctx.globalAlpha = alpha * 0.55;
+            ctx.fillStyle = e.color;
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, e.radius * (0.7 + 0.3 * alpha), 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1.0;
+    });
+}
+
+function drawScreenFlashes(ctx) {
+    impactEffects.forEach(e => {
+        if (e.type !== 'screenFlash') return;
+        if (e.delay && e.delay > 0) return;
+        const alpha = Math.max(0, e.life / e.maxLife);
+        ctx.globalAlpha = alpha * e.peakAlpha;
+        ctx.fillStyle = e.color;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        ctx.globalAlpha = 1.0;
+    });
+}
+
+function spawnEnergyResidue(x, y, color, count, life) {
+    for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const mag = 18 + Math.random() * 40;
+        impactEffects.push({
+            type: 'residue',
+            x: x + Math.cos(a) * mag * 0.15,
+            y: y + Math.sin(a) * mag * 0.15,
+            vx: Math.cos(a) * mag,
+            vy: Math.sin(a) * mag,
+            radius: 3 + Math.random() * 5,
+            color,
+            life: life * (0.6 + Math.random() * 0.4),
+            maxLife: life,
+            delay: 0
+        });
+    }
+}
+
+function spawnImpactVFX(kind, x, y, dirAngle, color, sourceType) {
+    const burst = (count, speedMin, speedMax, sizeMin, sizeMax, life, spread, col, shape = 'square', angle = dirAngle) => {
+        spawnDirectionalParticles(x, y, col, count, angle, spread, speedMin, speedMax, sizeMin, sizeMax, life * 0.6, life, shape);
+    };
+
+    if (kind === 'light') {
+        spawnImpactFlash(x, y, 14, 'rgba(255,255,255,0.9)', 0.07);
+        spawnImpactCore(x, y, 3, 10, '#ffffff', 0.08, 'circle');
+        spawnImpactLines(x, y, '#ffffff', 0.09, 4, 4, 8, 10, 18, 1, 1.6, dirAngle, Math.PI * 1.2);
+        burst(6, 200, 340, 2, 3, 0.18, Math.PI * 0.85, color);
+        burst(3, 320, 420, 2, 3.5, 0.10, Math.PI * 0.28, '#ffffff', 'spark');
+        cameraShake = Math.max(cameraShake, 0.08);
+    } else if (kind === 'heavy') {
+        spawnImpactFlash(x, y, 26, 'rgba(255,255,255,0.92)', 0.10);
+        spawnImpactCore(x, y, 5, 18, '#ffffff', 0.12, 'star');
+        spawnImpactRing(x, y, 8, 52, color, 0.26, 4);
+        spawnImpactLines(x, y, '#ffffff', 0.14, 7, 8, 14, 18, 36, 1.4, 2.4, dirAngle, Math.PI * 1.6);
+        burst(10, 260, 500, 3, 5, 0.32, Math.PI * 0.95, color);
+        burst(4, 380, 520, 3, 5, 0.14, Math.PI * 0.4, '#ffffff', 'spark');
+        spawnImpactFlash(x, y, 18, withAlpha(color, 0.35), 0.08, 0.07, 0.5);
+        spawnImpactRing(x, y, 16, 40, withAlpha('#ffffff', 0.5), 0.12, 2, 0.07);
+    } else if (kind === 'special1') {
+        spawnImpactFlash(x, y, 30, 'rgba(255,255,255,0.9)', 0.11);
+        spawnImpactCore(x, y, 6, 22, color, 0.16, 'circle');
+        spawnImpactRing(x, y, 8, 64, color, 0.30, 4);
+        spawnImpactLines(x, y, color, 0.16, 8, 10, 16, 22, 44, 1.5, 2.6, dirAngle, Math.PI * 1.7);
+        burst(12, 280, 540, 3, 5, 0.36, Math.PI * 1.15, color);
+        burst(4, 400, 560, 3, 5, 0.16, Math.PI * 0.45, '#ffffff', 'spark');
+        burst(2, 360, 520, 4, 6, 0.20, Math.PI * 0.3, color, 'spark');
+        spawnImpactFlash(x, y, 22, withAlpha(color, 0.4), 0.09, 0.08, 0.45);
+        spawnImpactRing(x, y, 18, 48, withAlpha('#ffffff', 0.55), 0.14, 2, 0.08);
+    } else if (kind === 'special2') {
+        spawnImpactFlash(x, y, 42, 'rgba(255,255,255,0.95)', 0.14);
+        spawnImpactCore(x, y, 8, 30, color, 0.20, 'star');
+        spawnImpactRing(x, y, 10, 88, color, 0.38, 5);
+        spawnImpactRing(x, y, 6, 56, '#ffffff', 0.26, 2);
+        spawnImpactLines(x, y, '#ffffff', 0.18, 10, 12, 20, 28, 58, 1.6, 3.0, dirAngle, Math.PI * 2);
+        burst(16, 320, 620, 3, 6, 0.42, Math.PI * 1.4, color);
+        burst(6, 420, 640, 3, 6, 0.20, Math.PI * 0.5, '#ffffff', 'spark');
+        burst(3, 380, 580, 4, 7, 0.24, Math.PI * 0.35, color, 'spark');
+        spawnScreenFlash('#ffffff', 0.08, 0.25);
+        spawnImpactFlash(x, y, 28, withAlpha(color, 0.45), 0.10, 0.09, 0.4);
+        spawnImpactRing(x, y, 22, 70, withAlpha(color, 0.6), 0.16, 3, 0.09);
+    } else if (kind === 'ultimate') {
+        spawnImpactFlash(x, y, 64, 'rgba(255,255,255,1)', 0.20);
+        spawnImpactCore(x, y, 10, 42, color, 0.28, 'star');
+        spawnImpactRing(x, y, 12, 130, color, 0.48, 6);
+        spawnImpactRing(x, y, 8, 86, '#ffffff', 0.34, 3);
+        spawnImpactLines(x, y, '#ffffff', 0.22, 14, 14, 24, 36, 78, 1.8, 3.4, dirAngle, Math.PI * 2);
+        burst(20, 360, 720, 3, 7, 0.48, Math.PI * 2, color);
+        burst(8, 480, 740, 3, 6, 0.24, Math.PI * 0.7, '#ffffff', 'spark');
+        burst(4, 420, 680, 4, 7, 0.28, Math.PI * 2, color, 'spark');
+        spawnEnergyResidue(x, y, color, 8, 0.55);
+        spawnScreenFlash('#ffffff', 0.14, 0.4);
+        spawnImpactFlash(x, y, 40, withAlpha(color, 0.5), 0.14, 0.10, 0.35);
+        spawnImpactRing(x, y, 28, 96, withAlpha('#ffffff', 0.7), 0.20, 3, 0.10);
+        spawnImpactCore(x, y, 6, 16, '#ffffff', 0.16, 'circle', 0.10);
+    } else if (kind === 'blocked') {
+        spawnImpactFlash(x, y, 16, 'rgba(220,230,255,0.7)', 0.07);
+        spawnImpactCore(x, y, 4, 12, '#e8eef8', 0.08, 'diamond');
+        spawnImpactRing(x, y, 6, 24, 'rgba(255,255,255,0.75)', 0.14, 2);
+        spawnImpactLines(x, y, '#ffffff', 0.10, 4, 6, 10, 10, 20, 1.2, 2.0, dirAngle, Math.PI * 0.9);
+        burst(4, 260, 400, 2, 3, 0.12, Math.PI * 0.75, '#ffffff', 'spark');
+    } else if (kind === 'parry') {
+        const src = sourceType || 'light';
+        const heavyish = (src === 'heavy');
+        const s1 = (src === 'special1');
+        const s2 = (src === 'special2');
+        const flashR = s2 ? 40 : s1 ? 32 : heavyish ? 28 : 22;
+        const corePeak = s2 ? 26 : s1 ? 20 : heavyish ? 18 : 14;
+        const ringEnd = s2 ? 78 : s1 ? 64 : heavyish ? 52 : 38;
+        const lineN = s2 ? 10 : s1 ? 8 : heavyish ? 7 : 6;
+        const parts = s2 ? 14 : s1 ? 10 : heavyish ? 8 : 6;
+        spawnImpactFlash(x, y, flashR, 'rgba(255,255,255,0.95)', 0.10);
+        spawnImpactCore(x, y, 5, corePeak, '#ffffff', 0.12, 'star');
+        spawnImpactRing(x, y, 8, ringEnd, color, 0.28, s2 ? 5 : 3);
+        spawnImpactRing(x, y, 6, ringEnd * 0.55, '#ffffff', 0.16, 2);
+        spawnImpactLines(x, y, '#ffffff', 0.14, lineN, 8, 14, 16, s2 ? 50 : 32, 1.5, 2.6, dirAngle, Math.PI * 2);
+        burst(parts, 280, s2 ? 620 : 480, 2, 5, 0.28, Math.PI * 2, color);
+        burst(s2 ? 6 : 4, 360, 560, 3, 5, 0.16, Math.PI * 2, '#ffffff', 'spark');
+        if (s1 || s2) burst(3, 340, 520, 3, 6, 0.18, Math.PI * 0.5, color, 'spark');
+        if (s2) spawnScreenFlash('#ffffff', 0.06, 0.18);
+        if (s2) cameraShake = Math.max(cameraShake, 0.4);
+        else if (s1) cameraShake = Math.max(cameraShake, 0.28);
+        else if (heavyish) cameraShake = Math.max(cameraShake, 0.22);
+        else cameraShake = Math.max(cameraShake, 0.12);
+    }
+}
+
 // --- 4. FIGHTER CLASS ---
-const STATES = { IDLE: 0, WALK: 1, JUMP: 2, LIGHT: 3, HEAVY: 4, SPECIAL_1: 5, BLOCK: 6, HIT: 7, DEAD: 8, SPECIAL_2: 9, ULTIMATE: 10 };
+const STATES = { IDLE: 0, WALK: 1, JUMP: 2, LIGHT: 3, HEAVY: 4, SPECIAL_1: 5, BLOCK: 6, HIT: 7, DEAD: 8, SPECIAL_2: 9, ULTIMATE: 10, PARRY: 11, PARRY_RECOVERY: 12, PARRY_SUCCESS: 13, DASH: 14, BACKDASH: 15 };
+
+const PARRY_WINDOW = 0.15;
+const PARRY_RECOVERY = 0.20;
+const PARRY_SUCCESS_HOLD = 0.14;
+const PARRY_ATTACKER_STUN = 0.40;
+const PARRY_KNOCKBACK = 300;
+const PARRY_ENERGY_REWARD = 15;
+const PARRY_HITSTOP = 0.12;
+
+const ATTACK_TIMING = {
+    LIGHT:     { total: 0.25, anticipation: 0.07, active: 0.10, recovery: 0.08 }, 
+    HEAVY:     { total: 0.50, anticipation: 0.22, active: 0.12, recovery: 0.16 }, 
+    SPECIAL_1: { total: 0.40, anticipation: 0.12, active: 0.12, recovery: 0.16 }, 
+    SPECIAL_2: { total: 0.90, anticipation: 0.30, active: 0.20, recovery: 0.40 }, 
+};
 
 class Fighter {
     constructor(isPlayer, x, color, accentColor) {
@@ -163,23 +516,22 @@ class Fighter {
         this.accentColor = accentColor;
         this.dir = isPlayer ? 1 : -1;
         
-        // Stats
         this.maxHp = 100;
         this.hp = this.maxHp;
-        this.energy = 0; // Max 100 for special
+        this.energy = 0; 
         
-        // State Machine
         this.state = STATES.IDLE;
         this.stateTimer = 0;
+        this.dashCooldownTimer = 0;
         
-        // Combat tracking (independent per-fighter combo state - used by BOTH player and CPU)
         this.comboCount = 0;
         this.comboTimer = 0;
         this.attackHasHit = false;
         
-        // AI Variables
         this.aiTimer = 0;
         this.aiJumpCooldown = 0;
+        this.aiParryCooldown = 0;
+        this.aiAttackCooldown = 0; // NEW: CPU attack cadence pacing
     }
 
     reset(x) {
@@ -189,15 +541,30 @@ class Fighter {
         this.state = STATES.IDLE;
         this.comboCount = 0;
         this.comboTimer = 0;
+        this.dashCooldownTimer = 0;
         this.dir = this.isPlayer ? 1 : -1;
         this.aiJumpCooldown = 0;
+        this.aiParryCooldown = 0;
+        this.aiAttackCooldown = 0;
     }
 
     update(dt, opponent) {
-        // Apply Vertical Velocity
+        if (this.dashCooldownTimer > 0) this.dashCooldownTimer -= dt;
+
+        if (this.state === STATES.DASH) {
+            this.vx = this.dir * 850;
+            if (Math.random() < 0.4) {
+                spawnDirectionalParticles(this.x - this.dir * 10, this.y - 70, this.accentColor, 1, (this.dir === 1 ? Math.PI : 0), 0.3, 100, 200, 2, 4, 0.15, 0.25, 'spark');
+            }
+        } else if (this.state === STATES.BACKDASH) {
+            this.vx = -this.dir * 700;
+            if (Math.random() < 0.3) {
+                spawnDirectionalParticles(this.x, this.y, '#cccccc', 1, -Math.PI/2, Math.PI, 40, 90, 2, 3, 0.2, 0.3, 'square');
+            }
+        }
+
         this.y += this.vy * dt;
 
-        // Apply Gravity and Ground Detection
         if (this.y < FLOOR_Y) {
             this.vy += 2500 * dt;
             if (this.state === STATES.IDLE || this.state === STATES.WALK) this.state = STATES.JUMP;
@@ -207,40 +574,42 @@ class Fighter {
             if (this.state === STATES.JUMP) this.state = STATES.IDLE;
         }
 
-        // Apply Friction/Deceleration
         this.vx *= Math.pow(0.01, dt); 
         this.x += this.vx * dt;
 
-        // Boundaries
         if (this.x < 30) this.x = 30;
         if (this.x > GAME_WIDTH - 30) this.x = GAME_WIDTH - 30;
 
-        // Facing direction (only change if not attacking/hit)
         if (this.state === STATES.IDLE || this.state === STATES.WALK || this.state === STATES.BLOCK) {
             this.dir = (opponent.x > this.x) ? 1 : -1;
         }
 
-        // State Timer updates
         if (this.stateTimer > 0) {
             this.stateTimer -= dt;
             if (this.stateTimer <= 0) {
-                if (this.state === STATES.DEAD) return; // Stay dead
-                this.state = STATES.IDLE;
-                this.attackHasHit = false;
+                if (this.state === STATES.DEAD) return; 
+                if (this.state === STATES.PARRY) {
+                    this.state = STATES.PARRY_RECOVERY;
+                    this.stateTimer = PARRY_RECOVERY;
+                    this.attackHasHit = false;
+                } else {
+                    if (this.state === STATES.DASH || this.state === STATES.BACKDASH) {
+                        this.vx *= 0.1; 
+                    }
+                    this.state = STATES.IDLE;
+                    this.attackHasHit = false;
+                }
             }
         }
 
-        // AI Jump Cooldown update
-        if (this.aiJumpCooldown > 0) {
-            this.aiJumpCooldown -= dt;
-        }
+        if (this.aiJumpCooldown > 0) this.aiJumpCooldown -= dt;
+        if (this.aiParryCooldown > 0) this.aiParryCooldown -= dt;
+        if (this.aiAttackCooldown > 0) this.aiAttackCooldown -= dt;
 
-        // Combo timer (independent per-fighter - applies to BOTH player and CPU)
         if (this.comboTimer > 0) {
             this.comboTimer -= dt;
             if (this.comboTimer <= 0) {
                 this.comboCount = 0;
-                // Ensure the corresponding indicator is hidden once the combo naturally expires
                 if (this.isPlayer) {
                     if (domCombo) domCombo.classList.add('hidden');
                 } else {
@@ -249,54 +618,70 @@ class Fighter {
             }
         }
 
-        // Passive Energy Gen
         if (this.energy < 100 && currentState === GAME_STATE.PLAYING) {
             this.energy += 5 * dt;
         }
 
-        // Handle Input / AI Logic
-        if (currentState === GAME_STATE.PLAYING && this.state !== STATES.DEAD && this.state !== STATES.HIT) {
+        if (currentState === GAME_STATE.PLAYING && this.state !== STATES.DEAD && this.state !== STATES.HIT
+            && this.state !== STATES.PARRY && this.state !== STATES.PARRY_RECOVERY && this.state !== STATES.PARRY_SUCCESS) {
             if (this.isPlayer) this.handlePlayerInput(opponent);
             else this.handleAI(dt, opponent);
         }
 
-        // Hit Detection for Attacks (ULTIMATE is intentionally excluded - its single
-        // finishing hit is applied directly by the cinematic system, see startUltimate)
         if ((this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2) && !this.attackHasHit) {
             this.checkAttackHit(opponent);
         }
     }
 
     handlePlayerInput(opponent) {
-        // Cannot interrupt attacks unless comboing, cannot move if blocking
-        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE) return;
-        
-        // Attack Inputs
-        // L now activates the highest special/ultimate tier the fighter can afford:
-        // 100 energy -> Ultimate, 66+ -> Level 2, 33+ -> Level 1, otherwise nothing.
-        if (keys['l']) {
-            if (this.energy >= 100) {
-                this.attack(STATES.ULTIMATE, opponent); return;
-            } else if (this.energy >= 66) {
-                this.attack(STATES.SPECIAL_2, opponent); return;
-            } else if (this.energy >= 33) {
-                this.attack(STATES.SPECIAL_1, opponent); return;
+        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE || this.state === STATES.DASH || this.state === STATES.BACKDASH) {
+            if (this.state === STATES.DASH || this.state === STATES.BACKDASH) {
+                // Lock dash direction: discard any Left/Right Arrow presses that occur
+                // while the current dash is still active, so they cannot alter or
+                // restart the in-progress dash, and cannot leak into the next dash.
+                keys['arrowright_trigger'] = false;
+                keys['arrowleft_trigger'] = false;
             }
-            // Insufficient energy for any tier - fall through, same as a no-op key press.
+            return;
+        }
+        
+        if (keys['l']) {
+            if (this.energy >= 100) { this.attack(STATES.ULTIMATE, opponent); return; } 
+            else if (this.energy >= 66) { this.attack(STATES.SPECIAL_2, opponent); return; } 
+            else if (this.energy >= 33) { this.attack(STATES.SPECIAL_1, opponent); return; }
         } else if (keys['k']) {
             this.attack(STATES.HEAVY, opponent); return;
         } else if (keys['j']) {
             this.attack(STATES.LIGHT, opponent); return;
         }
 
-        // Defense
+        if (keys['p_trigger']) {
+            keys['p_trigger'] = false;
+            this.startParry();
+            return;
+        }
+
         if (keys['s']) {
             this.state = STATES.BLOCK;
             this.vx = 0;
             return;
         }
 
-        // Movement (A and D only)
+        let dashed = false;
+        if (keys['arrowright_trigger'] && this.dashCooldownTimer <= 0) {
+            this.startDash(STATES.DASH);
+            dashed = true;
+        } else if (keys['arrowleft_trigger'] && this.dashCooldownTimer <= 0) {
+            this.startDash(STATES.BACKDASH);
+            dashed = true;
+        }
+        
+        keys['arrowright_trigger'] = false;
+        keys['arrowleft_trigger'] = false;
+        keys['d_trigger'] = false;
+        keys['a_trigger'] = false;
+        if (dashed) return;
+
         if (keys['a']) {
             this.vx = -400;
             if(this.y === FLOOR_Y) this.state = STATES.WALK;
@@ -307,66 +692,64 @@ class Fighter {
             if(this.y === FLOOR_Y) this.state = STATES.IDLE;
         }
 
-        // Jump (Spacebar)
         if (keys['space_trigger'] && this.y === FLOOR_Y) {
             this.vy = -900;
             this.state = STATES.JUMP;
-            keys['space_trigger'] = false; // consume trigger to prevent holding from looping jumps
+            keys['space_trigger'] = false; 
         }
     }
 
     handleAI(dt, opponent) {
-        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE) return;
+        if (this.state === STATES.LIGHT || this.state === STATES.HEAVY || this.state === STATES.SPECIAL_1 || this.state === STATES.SPECIAL_2 || this.state === STATES.ULTIMATE || this.state === STATES.DASH || this.state === STATES.BACKDASH) return;
+        if (this.state === STATES.PARRY || this.state === STATES.PARRY_RECOVERY || this.state === STATES.PARRY_SUCCESS) return;
         
         this.aiTimer -= dt;
-        if (this.aiTimer > 0) return; // Thinking pause
+        if (this.aiTimer > 0) return; 
 
         const dist = Math.abs(opponent.x - this.x);
-        this.aiTimer = Math.random() * 0.2 + 0.1; // React every 100-300ms
+        this.aiTimer = Math.random() * 0.2 + 0.1; 
 
-        // AI Logic Tree
+        if (this.tryCpuParry(opponent, dist)) return;
+
+        const canAttack = (this.aiAttackCooldown <= 0);
+
         if (dist > 300) {
-            // Check if special can be used at range (kept from original: only attempt at long range within ~380 units)
-            if (dist <= 380 && this.decideSpecialAttack(opponent)) {
-                // handled inside decideSpecialAttack
+            if (dist <= 380 && canAttack && this.decideSpecialAttack(opponent)) {
+                // handled
             } else if (this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && Math.random() < 0.25) {
                 this.vy = -900;
                 this.state = STATES.JUMP;
-                this.aiJumpCooldown = 2.0; // Cooldown before next AI jump
+                this.aiJumpCooldown = 2.0; 
             } else {
                 this.vx = this.dir * 350;
                 if(this.y === FLOOR_Y) this.state = STATES.WALK;
             }
         } else if (dist < 150) {
-            // In combat range
             const rand = Math.random();
-            if (this.decideSpecialAttack(opponent)) {
-                // handled inside decideSpecialAttack
+            if (canAttack && this.decideSpecialAttack(opponent)) {
+                // handled
             } else if (opponent.state === STATES.LIGHT || opponent.state === STATES.HEAVY) {
-                if (rand < 0.5) this.state = STATES.BLOCK; // Block incoming attack
+                if (rand < 0.5) this.state = STATES.BLOCK; 
                 else if (this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && rand < 0.8) {
-                    // Jump to reposition/avoid
                     this.vy = -900;
                     this.state = STATES.JUMP;
                     this.aiJumpCooldown = 2.0;
                 }
             } else {
-                if (rand < 0.4) this.attack(STATES.LIGHT, opponent);
-                else if (rand < 0.7) this.attack(STATES.HEAVY, opponent);
+                if (canAttack && rand < 0.4) this.attack(STATES.LIGHT, opponent);
+                else if (canAttack && rand < 0.7) this.attack(STATES.HEAVY, opponent);
                 else if (this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && rand < 0.85) {
-                    // Tactical jump reposition
                     this.vy = -900;
                     this.state = STATES.JUMP;
                     this.aiJumpCooldown = 2.0;
                 } else {
-                    this.vx = -this.dir * 300; // retreat slightly
+                    this.vx = -this.dir * 300; 
                 }
             }
         } else {
-            // Mid range
             const rand = Math.random();
-            if (this.decideSpecialAttack(opponent)) {
-                // handled inside decideSpecialAttack
+            if (canAttack && this.decideSpecialAttack(opponent)) {
+                // handled
             } else if (opponent.y < FLOOR_Y && this.y === FLOOR_Y && this.aiJumpCooldown <= 0 && rand < 0.4) {
                 this.vy = -900;
                 this.state = STATES.JUMP;
@@ -378,11 +761,6 @@ class Fighter {
         }
     }
 
-    // Chooses and attempts the highest-value special/ultimate the CPU can currently
-    // afford, with per-tier probabilities so it doesn't fire the instant it's
-    // available (per-branch call sites are unchanged from the original single-special
-    // AI logic - only the decision itself is now tiered). Returns true if an attack
-    // was initiated, so callers can skip their other branches exactly like before.
     decideSpecialAttack(opponent) {
         if (this.energy >= 100 && Math.random() < 0.6) {
             this.attack(STATES.ULTIMATE, opponent);
@@ -399,40 +777,114 @@ class Fighter {
         return false;
     }
 
+    startParry() {
+        this.state = STATES.PARRY;
+        this.stateTimer = PARRY_WINDOW;
+        this.vx = 0;
+    }
+    
+    startDash(type) {
+        this.state = type;
+        this.stateTimer = (type === STATES.DASH) ? 0.20 : 0.22;
+        this.dashCooldownTimer = 0.35;
+        this.vx = 0; 
+        this.attackHasHit = false;
+        
+        playSound(type === STATES.DASH ? 'dash' : 'backdash');
+        
+        if (type === STATES.DASH) {
+            spawnDirectionalParticles(this.x, this.y - 70, this.accentColor, 4, (this.dir === 1 ? Math.PI : 0), 0.4, 200, 400, 2, 5, 0.15, 0.25, 'spark');
+        } else {
+            spawnDirectionalParticles(this.x, this.y - 10, '#ffffff', 5, -Math.PI/2, Math.PI, 100, 200, 2, 4, 0.2, 0.3, 'square');
+        }
+    }
+
+    tryCpuParry(opponent, dist) {
+        if (this.aiParryCooldown > 0) return false;
+        if (dist > 220) return false;
+        const phase = opponent.getAttackPhase && opponent.getAttackPhase();
+        if (!phase) return false;
+        if (phase.phase !== 'anticipation' && phase.phase !== 'active') return false;
+        let chance = 0.12;
+        if (opponent.state === STATES.HEAVY) chance = 0.15;
+        else if (opponent.state === STATES.SPECIAL_1) chance = 0.12;
+        else if (opponent.state === STATES.SPECIAL_2) chance = 0.10;
+        else if (opponent.state === STATES.LIGHT) chance = 0.10;
+        if (Math.random() >= chance) {
+            this.aiParryCooldown = 0.45; 
+            return false;
+        }
+        this.startParry();
+        this.aiParryCooldown = 1.6;
+        return true;
+    }
+
     attack(type, opponent) {
-        // Fix: Force facing direction directly toward the opponent when initiating an attack
         if (opponent) {
             this.dir = (opponent.x > this.x) ? 1 : -1;
         }
 
-        // ULTIMATE doesn't behave like a normal timed attack state - it hands off
-        // entirely to the dedicated cinematic system (see startUltimate below),
-        // which is what freezes both fighters for the duration of the sequence.
         if (type === STATES.ULTIMATE) {
             startUltimate(this, opponent);
+            if (!this.isPlayer) {
+                // Ensure a safe, sizable pause after executing an ultimate
+                this.aiAttackCooldown = 2.7 + 0.5 + Math.random() * 0.3;
+            }
             return;
         }
 
         this.state = type;
         this.attackHasHit = false;
-        this.vx = 0; // stop moving
+        this.vx = 0; 
 
         if (type === STATES.LIGHT) {
             this.stateTimer = 0.25;
             playSound('light');
         } else if (type === STATES.HEAVY) {
             this.stateTimer = 0.5;
-            this.vx = this.dir * 200; // slight forward momentum
+            this.vx = this.dir * 200; 
             playSound('heavy');
         } else if (type === STATES.SPECIAL_1) {
             this.stateTimer = 0.4;
-            this.energy = Math.max(0, this.energy - 33); // Level 1 costs ~33 energy
+            this.energy = Math.max(0, this.energy - 33); 
             playSound('special');
         } else if (type === STATES.SPECIAL_2) {
             this.stateTimer = 0.9;
-            this.energy = Math.max(0, this.energy - 66); // Level 2 costs ~66 energy
+            this.energy = Math.max(0, this.energy - 66); 
             playSound('special2');
         }
+
+        // --- NEW CPU CADENCE FIX ---
+        // Dynamically scales the post-attack 'breathing room' depending on the weight of the move 
+        if (!this.isPlayer) {
+            let postAttackDelay = 0.3;
+            if (type === STATES.LIGHT) postAttackDelay = 0.2 + Math.random() * 0.2; // 200 - 400ms
+            else if (type === STATES.HEAVY) postAttackDelay = 0.3 + Math.random() * 0.3; // 300 - 600ms
+            else if (type === STATES.SPECIAL_1) postAttackDelay = 0.4 + Math.random() * 0.2; // 400 - 600ms
+            else if (type === STATES.SPECIAL_2) postAttackDelay = 0.5 + Math.random() * 0.3; // 500 - 800ms
+            
+            // Because aiAttackCooldown ticks down DURING the animation, we add the attack's overall length
+            this.aiAttackCooldown = this.stateTimer + postAttackDelay;
+        }
+    }
+
+    getAttackPhase() {
+        let timing;
+        if (this.state === STATES.LIGHT) timing = ATTACK_TIMING.LIGHT;
+        else if (this.state === STATES.HEAVY) timing = ATTACK_TIMING.HEAVY;
+        else if (this.state === STATES.SPECIAL_1) timing = ATTACK_TIMING.SPECIAL_1;
+        else if (this.state === STATES.SPECIAL_2) timing = ATTACK_TIMING.SPECIAL_2;
+        else return null;
+
+        const activeFrameStart = timing.total - timing.anticipation; 
+        const activeFrameEnd = activeFrameStart - timing.active;     
+
+        let phase;
+        if (this.stateTimer > activeFrameStart) phase = 'anticipation';
+        else if (this.stateTimer > activeFrameEnd) phase = 'active';
+        else phase = 'recovery';
+
+        return { phase, activeFrameStart, activeFrameEnd, timing };
     }
 
     checkAttackHit(opponent) {
@@ -442,50 +894,30 @@ class Fighter {
         let damage = 0;
         let knockback = 0;
         let stunTime = 0;
-        let activeFrameStart = 0;
         let hitType = '';
 
-        if (this.state === STATES.LIGHT) { reach = 100; damage = 5; knockback = 150; stunTime = 0.3; activeFrameStart = 0.15; hitType = 'light';}
-        if (this.state === STATES.HEAVY) { reach = 150; damage = 12; knockback = 500; stunTime = 0.5; activeFrameStart = 0.3; hitType = 'heavy';}
-        if (this.state === STATES.SPECIAL_1) { reach = 180; damage = 28; knockback = 400; stunTime = 0.35; activeFrameStart = 0.2; hitType = 'special1';}
-        if (this.state === STATES.SPECIAL_2) { reach = 450; damage = 45; knockback = 700; stunTime = 0.6; activeFrameStart = 0.5; hitType = 'special2';}
+        if (this.state === STATES.LIGHT) { reach = 100; damage = 5; knockback = 150; stunTime = 0.3; hitType = 'light';}
+        if (this.state === STATES.HEAVY) { reach = 150; damage = 12; knockback = 500; stunTime = 0.5; hitType = 'heavy';}
+        if (this.state === STATES.SPECIAL_1) { reach = 180; damage = 28; knockback = 400; stunTime = 0.35; hitType = 'special1';}
+        if (this.state === STATES.SPECIAL_2) { reach = 450; damage = 45; knockback = 700; stunTime = 0.6; hitType = 'special2';}
 
-        // Only hit during "active frames" (end of the animation timer)
-        if (this.stateTimer > activeFrameStart) return;
+        const phaseInfo = this.getAttackPhase();
+        if (!phaseInfo || phaseInfo.phase !== 'active') return;
 
-        // Distance check
-        const dist = (opponent.x - this.x) * this.dir; // Positive if opponent is in front
+        const dist = (opponent.x - this.x) * this.dir; 
         const yDist = Math.abs(opponent.y - this.y);
         
-        // Relax vertical threshold slightly for the Level 2 beam to account for airborne states cleanly
         let maxVerticalDist = (this.state === STATES.SPECIAL_2) ? 140 : 100;
 
-        // --- Aerial Heavy attack vertical fix ---
-        // Heavy's swing is a downward/overhead animation, so when the attacker is
-        // airborne and swinging at a grounded opponent, `yDist` grows with jump
-        // height even though the swing visually reaches the ground. Widen the
-        // vertical tolerance for this specific case only (Heavy, attacker airborne,
-        // opponent grounded) - horizontal reach, active frames, and all other
-        // attack/matchup combinations are untouched. ~180 comfortably covers the
-        // fighter's max jump height (~162 units) without being an unbounded hitbox.
         const attackerAirborne = this.y < FLOOR_Y;
         const opponentGrounded = opponent.y >= FLOOR_Y;
         if (this.state === STATES.HEAVY && attackerAirborne && opponentGrounded) {
             maxVerticalDist = 180;
         }
 
-        // --- Light attack hitbox fix ---
-        // The old check only compared `reach` to the opponent's CENTER x position,
-        // ignoring that the opponent's body (width 60) extends toward the attacker.
-        // The visible slash (ctx.fillRect(20, -100, 80, 10)) reaches `reach` units
-        // in front of the attacker, so a hit should register once that slash tip
-        // reaches the opponent's near body edge - not the opponent's center.
-        // Adding half the opponent's body width closes that gap so "looks like a
-        // hit" and "registers as a hit" agree, while a real visible gap still misses.
-        // Heavy and Special are untouched and keep the original center-based check.
         let isHit;
         if (this.state === STATES.LIGHT) {
-            const opponentHalfWidth = opponent.width / 2; // 30 - matches opponent's body extent
+            const opponentHalfWidth = opponent.width / 2; 
             const effectiveReach = reach + opponentHalfWidth;
             isHit = (dist > 0 && dist < effectiveReach && yDist < maxVerticalDist);
         } else {
@@ -494,23 +926,38 @@ class Fighter {
 
         if (isHit) {
             this.attackHasHit = true;
-
-            // takeDamage now reports whether the hit was actually blocked, so combo
-            // logic can react to the REAL outcome instead of guessing from state.
             const result = opponent.takeDamage(damage, knockback * this.dir, stunTime, hitType);
 
+            if (result.parried) {
+                this.comboCount = 0;
+                this.comboTimer = 0;
+                if (this.isPlayer) {
+                    if (domCombo) domCombo.classList.add('hidden');
+                } else {
+                    if (domCpuCombo) domCpuCombo.classList.add('hidden');
+                }
+                this.state = STATES.HIT;
+                this.stateTimer = PARRY_ATTACKER_STUN;
+                this.vx = -this.dir * PARRY_KNOCKBACK;
+                this.attackHasHit = true;
+                return;
+            }
+
             if (!result.blocked) {
-                // Successful (unblocked) hit -> build this fighter's combo.
                 this.comboCount++;
                 this.comboTimer = 1.0;
                 if (this.comboCount > 1) {
                     if (this.isPlayer) updatePlayerComboUI(this.comboCount);
                     else updateCpuComboUI(this.comboCount);
                 }
-                // Energy-on-hit now applies to both fighters (previously player-only).
-                this.energy = Math.min(100, this.energy + 10); // Gain energy on hit
+                this.energy = Math.min(100, this.energy + 10); 
+                
+                // --- COMBO PRESERVATION FIX ---
+                // Wipes the cadence delay exclusively on unblocked hits so the CPU can freely and rapidly chain combinations
+                if (!this.isPlayer) {
+                    this.aiAttackCooldown = 0;
+                }
             } else {
-                // Blocked hit -> combo is interrupted and does NOT increase.
                 this.comboCount = 0;
                 this.comboTimer = 0;
                 if (this.isPlayer) {
@@ -526,79 +973,125 @@ class Fighter {
         let actualDamage = amount;
         let actualKnockback = knockback;
         let blocked = false;
+        let hitStopDuration = 0;
+        let vfxKind = type; 
 
-        // Blocking logic
+        if (this.state === STATES.PARRY && type !== 'ultimate') {
+            this.state = STATES.PARRY_SUCCESS;
+            this.stateTimer = PARRY_SUCCESS_HOLD;
+            this.energy = Math.min(100, this.energy + PARRY_ENERGY_REWARD);
+            playSound('parry');
+            if (typeof hitStopTimer !== 'undefined') {
+                hitStopTimer = Math.max(hitStopTimer, PARRY_HITSTOP);
+            }
+            const hitDirSign = knockback !== 0 ? Math.sign(knockback) : 1;
+            const dirAngle = hitDirSign >= 0 ? 0 : Math.PI;
+            const vfxX = this.x - hitDirSign * 22;
+            spawnImpactVFX('parry', vfxX, this.y - 70, dirAngle, this.accentColor, type);
+            return { blocked: true, parried: true, damage: 0 };
+        }
+
         if (this.state === STATES.BLOCK) {
             blocked = true;
+            vfxKind = 'blocked';
             actualDamage = Math.floor(amount * 0.2);
             actualKnockback = knockback * 0.1;
             playSound('block');
-            spawnParticles(this.x + this.dir * 30, this.y - 70, '#ffffff', 10, 200);
             this.energy = Math.min(100, this.energy + 5);
+            hitStopDuration = 0.02; 
         } else {
             this.state = STATES.HIT;
             this.stateTimer = stunTime;
             playSound('hit');
-            spawnParticles(this.x, this.y - 70, this.accentColor, 20, 600);
             
-            // Graduated shake: Heavy/Level1 keep the original intensity, Level2 is
-            // stronger, and the Ultimate finishing hit is the strongest in the game.
             if (type === 'heavy' || type === 'special1') cameraShake = Math.max(cameraShake, 0.3);
             else if (type === 'special2') cameraShake = Math.max(cameraShake, 0.45);
             else if (type === 'ultimate') cameraShake = Math.max(cameraShake, 0.6);
+
+            if (type === 'light') hitStopDuration = 0.045; 
+            else if (type === 'heavy') hitStopDuration = 0.08; 
+            else if (type === 'special1') hitStopDuration = 0.09; 
+            else if (type === 'special2') hitStopDuration = 0.11; 
+            else if (type === 'ultimate') hitStopDuration = 0.18; 
         }
 
-        this.hp -= actualDamage;
+        if (typeof hitStopTimer !== 'undefined') {
+            hitStopTimer = Math.max(hitStopTimer, hitStopDuration);
+        }
+
+        this.hp -= actualDamage; 
         this.vx = actualKnockback;
         updateHealthUI();
+
+        const hitDirSign = actualKnockback !== 0 ? Math.sign(actualKnockback) : (knockback !== 0 ? Math.sign(knockback) : 1);
+        const dirAngle = hitDirSign >= 0 ? 0 : Math.PI;
+        const vfxX = this.x - hitDirSign * (blocked ? 28 : 18);
+        spawnImpactVFX(vfxKind, vfxX, this.y - 70, dirAngle, this.accentColor);
 
         if (this.hp <= 0) {
             this.hp = 0;
             this.state = STATES.DEAD;
             this.stateTimer = 999;
-            this.vx = knockback * 1.5; // Dramatic fall
+            this.vx = knockback * 1.5; 
             this.vy = -400;
             spawnParticles(this.x, this.y - 70, this.color, 50, 800);
             checkRoundEnd();
         }
 
-        // Report the real outcome of this hit so the attacker's combo logic
-        // can tell a blocked attack apart from a full-damage hit.
         return { blocked, damage: actualDamage };
     }
 
     draw(ctx) {
         ctx.save();
         ctx.translate(this.x, this.y);
-        ctx.scale(this.dir, 1); // Flip based on facing direction
+        ctx.scale(this.dir, 1); 
 
-        // Base styling
         ctx.fillStyle = this.color;
         
-        // Draw Shadow
         ctx.fillStyle = 'rgba(0,0,0,0.5)';
         ctx.beginPath();
         ctx.ellipse(0, 0, 40, 10, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        // Draw stylized figure (Canvas shapes)
         ctx.fillStyle = this.color;
         
         if (this.state === STATES.DEAD) {
-            // Lying on ground
             ctx.fillRect(-this.height/2, -20, this.height, 20);
         } else if (this.state === STATES.HIT) {
-            // Knocked back posture
             ctx.rotate(-0.2);
-            ctx.fillRect(-20, -120, 40, 100); // Body
+            ctx.fillRect(-20, -120, 40, 100); 
             ctx.fillStyle = '#fff';
-            ctx.fillRect(-15, -140, 30, 30); // Head flash
+            ctx.fillRect(-15, -140, 30, 30); 
+        } else if (this.state === STATES.PARRY || this.state === STATES.PARRY_SUCCESS) {
+            ctx.fillRect(-18, -120, 40, 100);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-15, -148, 30, 30);
+            const pulse = this.state === STATES.PARRY_SUCCESS ? 1 : (0.45 + 0.55 * (this.stateTimer / PARRY_WINDOW));
+            ctx.strokeStyle = this.accentColor;
+            ctx.lineWidth = 3;
+            ctx.globalAlpha = 0.35 + 0.55 * pulse;
+            ctx.beginPath();
+            ctx.arc(28, -80, 18 + pulse * 8, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = this.state === STATES.PARRY_SUCCESS ? '#ffffff' : this.accentColor;
+            ctx.globalAlpha = 0.85;
+            ctx.fillRect(18, -110, 50, 8);
+            ctx.globalAlpha = 1.0;
+        } else if (this.state === STATES.PARRY_RECOVERY) {
+            ctx.fillRect(-20, -105, 40, 105);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(-15, -132, 30, 28);
+            ctx.globalAlpha = 0.35;
+            ctx.strokeStyle = this.accentColor;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(22, -70, 12, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = 1.0;
         } else if (this.state === STATES.BLOCK) {
-            // Defensive crouch + Shield
             ctx.fillRect(-20, -100, 40, 100);
             ctx.fillStyle = '#fff';
-            ctx.fillRect(-15, -130, 30, 30); // Head
-            // Shield effect
+            ctx.fillRect(-15, -130, 30, 30); 
             ctx.strokeStyle = this.accentColor;
             ctx.lineWidth = 4;
             ctx.beginPath();
@@ -607,54 +1100,94 @@ class Fighter {
             ctx.lineTo(30, 0);
             ctx.stroke();
         } else {
-            // Normal Posture (Idle, Walk, Jump, Attack core body)
             let lean = 0;
             if (this.state === STATES.WALK) lean = 0.2;
             if (this.state === STATES.JUMP) lean = -0.1;
+            if (this.state === STATES.DASH) lean = 0.4;
+            if (this.state === STATES.BACKDASH) lean = -0.25;
             
             ctx.rotate(lean);
-            ctx.fillRect(-20, -120, 40, 100); // Torso/Legs
+            ctx.fillRect(-20, -120, 40, 100); 
             
-            // Stylized Scarf/Hair
             ctx.fillStyle = this.accentColor;
             const wave = Math.sin(Date.now() / 150) * 10;
             ctx.fillRect(-40, -110 + wave, 30, 15);
             
-            // Head
             ctx.fillStyle = '#fff';
             ctx.fillRect(-15, -150, 30, 30);
 
-            // Attacks Overlays
-            if (this.state === STATES.LIGHT) {
-                // Quick slash
+            const atk = this.getAttackPhase();
+            if (this.state === STATES.LIGHT && atk) {
                 ctx.fillStyle = this.accentColor;
-                ctx.fillRect(20, -100, 80, 10);
-            } else if (this.state === STATES.HEAVY) {
-                // Big overhead swing
+                if (atk.phase === 'anticipation') {
+                    ctx.globalAlpha = 0.5;
+                    ctx.fillRect(15, -105, 15, 10);
+                    ctx.globalAlpha = 1.0;
+                } else if (atk.phase === 'active') {
+                    ctx.fillRect(20, -100, 80, 10);
+                } else {
+                    ctx.globalAlpha = 0.25;
+                    ctx.fillRect(20, -100, 80, 10);
+                    ctx.globalAlpha = 1.0;
+                }
+            } else if (this.state === STATES.HEAVY && atk) {
                 ctx.fillStyle = this.accentColor;
-                const swingPhase = this.stateTimer / 0.5; // 1 to 0
-                ctx.rotate(swingPhase * Math.PI - Math.PI/4);
-                ctx.fillRect(0, -140, 20, 120);
-            } else if (this.state === STATES.SPECIAL_1) {
-                // Level 1: fast, short-range energy strike - a brighter, longer slash
+                if (atk.phase === 'anticipation') {
+                    ctx.globalAlpha = 0.8;
+                    ctx.rotate(-Math.PI / 3);
+                    ctx.fillRect(0, -160, 20, 90);
+                    ctx.globalAlpha = 1.0;
+                } else if (atk.phase === 'active') {
+                    const activeSpan = atk.activeFrameStart - atk.activeFrameEnd;
+                    const swingProgress = activeSpan > 0 ? (this.stateTimer - atk.activeFrameEnd) / activeSpan : 0; 
+                    ctx.rotate(swingProgress * Math.PI - Math.PI/4);
+                    ctx.fillRect(0, -140, 20, 120);
+                } else {
+                    ctx.globalAlpha = 0.4;
+                    ctx.fillRect(0, -60, 20, 60);
+                    ctx.globalAlpha = 1.0;
+                }
+            } else if (this.state === STATES.SPECIAL_1 && atk) {
                 ctx.fillStyle = this.accentColor;
-                ctx.globalAlpha = 0.9;
-                ctx.fillRect(20, -110, 160, 20);
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(20, -102, 160, 4);
-                ctx.globalAlpha = 1.0;
-            } else if (this.state === STATES.SPECIAL_2) {
-                // Level 2: large energy beam - bigger and brighter than Level 1
+                if (atk.phase === 'anticipation') {
+                    const chargeT = 1 - (this.stateTimer - atk.activeFrameStart) / atk.timing.anticipation; 
+                    ctx.globalAlpha = 0.3 + 0.5 * chargeT;
+                    ctx.beginPath();
+                    ctx.arc(20, -100, 8 + chargeT * 10, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                } else if (atk.phase === 'active') {
+                    ctx.globalAlpha = 0.9;
+                    ctx.fillRect(20, -110, 160, 20);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(20, -102, 160, 4);
+                    ctx.globalAlpha = 1.0;
+                } else {
+                    ctx.globalAlpha = 0.25;
+                    ctx.fillRect(20, -110, 160, 20);
+                    ctx.globalAlpha = 1.0;
+                }
+            } else if (this.state === STATES.SPECIAL_2 && atk) {
                 ctx.fillStyle = this.accentColor;
-                ctx.globalAlpha = 0.85;
-                ctx.fillRect(30, -140, 420, 90);
-                ctx.fillStyle = '#fff';
-                ctx.fillRect(30, -110, 420, 30);
-                ctx.globalAlpha = 1.0;
+                if (atk.phase === 'anticipation') {
+                    const chargeT = 1 - (this.stateTimer - atk.activeFrameStart) / atk.timing.anticipation; 
+                    ctx.globalAlpha = 0.3 + 0.5 * chargeT;
+                    ctx.beginPath();
+                    ctx.arc(20, -110, 14 + chargeT * 20, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.globalAlpha = 1.0;
+                } else if (atk.phase === 'active') {
+                    ctx.globalAlpha = 0.85;
+                    ctx.fillRect(30, -140, 420, 90);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(30, -110, 420, 30);
+                    ctx.globalAlpha = 1.0;
+                } else {
+                    ctx.globalAlpha = 0.2;
+                    ctx.fillRect(30, -140, 420, 90);
+                    ctx.globalAlpha = 1.0;
+                }
             } else if (this.state === STATES.ULTIMATE) {
-                // Sword held ready during the cinematic. The dash/slash/finish visuals
-                // themselves are drawn by drawUltimateOverlay(); this just keeps the
-                // base silhouette sensible if the cinematic ends abruptly (e.g. a KO).
                 ctx.fillStyle = this.accentColor;
                 ctx.globalAlpha = 0.9;
                 ctx.fillRect(15, -130, 90, 8);
@@ -670,18 +1203,7 @@ class Fighter {
 const player = new Fighter(true, 300, '#222', '#00f3ff');
 const enemy = new Fighter(false, 980, '#222', '#ff00ea');
 
-// --- 4b. ULTIMATE CINEMATIC SYSTEM (LEVEL 3) ---
-// Fully separate from the normal per-fighter update/attack flow. While
-// `currentState === GAME_STATE.ULTIMATE`, the main update() dispatcher (see below)
-// calls ONLY updateUltimateCinematic() instead of player.update()/enemy.update(),
-// which is what freezes both fighters (movement, input, AI, and further attacks -
-// including a second Ultimate) for the whole sequence. Damage is applied exactly
-// once, at the scripted "finish" beat, via the normal takeDamage() so blocking,
-// knockback, and combo rules all still apply.
-
-// Fixed timeline (seconds from activation). Each beat fires exactly once, in
-// order, as `timer` passes its `t` value - this keeps the sequence exact
-// regardless of frame rate rather than relying on continuous range checks.
+// --- 4b. ULTIMATE CINEMATIC SYSTEM ---
 const ULTIMATE_TIMELINE = [
     { t: 0.30, action: 'dash' },
     { t: 0.50, action: 'slash1' },
@@ -692,17 +1214,17 @@ const ULTIMATE_TIMELINE = [
     { t: 2.00, action: 'finish' },
     { t: 2.70, action: 'end' },
 ];
-const ULTIMATE_DAMAGE = 80; // Strongest attack in the game; still routed through takeDamage() so blocking applies
+const ULTIMATE_DAMAGE = 80; 
 
 function startUltimate(attacker, opponent) {
-    if (currentState === GAME_STATE.ULTIMATE) return; // Guard against re-entrancy/double activation
+    if (currentState === GAME_STATE.ULTIMATE) return; 
 
     attacker.state = STATES.ULTIMATE;
     attacker.stateTimer = 0;
     attacker.attackHasHit = false;
     attacker.vx = 0;
     attacker.vy = 0;
-    attacker.energy = 0; // Ultimate always consumes all 100 energy, immediately
+    attacker.energy = 0; 
 
     ultimateData = {
         attacker,
@@ -723,22 +1245,15 @@ function endUltimateCinematic() {
         attacker.state = STATES.IDLE;
         attacker.stateTimer = 0;
         attacker.attackHasHit = false;
-        // Safety clamp: keep the attacker's cinematic-repositioned x within the
-        // arena, mirroring the normal boundary clamp in Fighter.update().
         attacker.x = Math.max(30, Math.min(GAME_WIDTH - 30, attacker.x));
     }
     ultimateData = null;
-    // Only resume normal play if nothing else (e.g. a KO via checkRoundEnd) has
-    // already moved the game to a different state - a KO takes priority.
     if (currentState === GAME_STATE.ULTIMATE) {
         currentState = GAME_STATE.PLAYING;
     }
 }
 
 function updateUltimateCinematic(dt) {
-    // Safety net: if the state changed out from under us (e.g. the finishing hit
-    // KO'd the opponent and checkRoundEnd() already took over), stop immediately
-    // rather than continuing to drive a cinematic that's no longer relevant.
     if (currentState !== GAME_STATE.ULTIMATE || !ultimateData) {
         ultimateData = null;
         return;
@@ -763,10 +1278,8 @@ function updateUltimateCinematic(dt) {
         } else if (action === 'rapid') {
             playSound('heavy');
         } else if (action === 'reposition') {
-            attacker.dir = -dir; // Now attacking from behind, toward the opponent
+            attacker.dir = -dir; 
         } else if (action === 'finish') {
-            // The single, intentional damage moment - never applied more than once
-            // because this 'finish' beat can only fire one time per cinematic.
             playSound('ultimate');
             const result = opponent.takeDamage(ULTIMATE_DAMAGE, 1000 * dir, 0.8, 'ultimate');
 
@@ -786,15 +1299,13 @@ function updateUltimateCinematic(dt) {
             spawnParticles(opponent.x, opponent.y - 70, attacker.accentColor, 60, 900);
         } else if (action === 'end') {
             endUltimateCinematic();
-            return; // ultimateData is now cleared - nothing left to do this frame
+            return; 
         }
     }
 
-    // Continuous motion between beats (dash in / reposition behind the opponent)
     if (u.timer >= 0.30 && u.timer < 0.50) {
         const t = Math.min(1, (u.timer - 0.30) / 0.20);
         const targetX = u.origOpponentX - dir * 80;
-        // Use the attacker's position at cinematic start (captured lazily) to interpolate smoothly
         if (u._dashFromX === undefined) u._dashFromX = attacker.x;
         attacker.x = u._dashFromX + (targetX - u._dashFromX) * t;
         spawnParticles(attacker.x, attacker.y - 70, attacker.accentColor, 1, 250);
@@ -814,7 +1325,6 @@ function drawUltimateOverlay(ctx) {
 
     ctx.save();
 
-    // Darkened background to focus attention on the fighters
     let darken = 0;
     if (t < 0.3) darken = (t / 0.3) * 0.5;
     else if (t < 2.3) darken = 0.5;
@@ -824,14 +1334,12 @@ function drawUltimateOverlay(ctx) {
         ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     }
 
-    // Screen flash at the finishing-slash moment
     if (t >= 2.0 && t < 2.15) {
         const flashAlpha = 1 - (t - 2.0) / 0.15;
         ctx.fillStyle = `rgba(255,255,255,${(flashAlpha * 0.8).toFixed(2)})`;
         ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     }
 
-    // Dramatic callout text during the slash sequence
     if (t >= 0.5 && t < 1.8) {
         const fadeIn = Math.min(1, (t - 0.5) * 4);
         const fadeOut = t > 1.6 ? Math.max(0, (1.8 - t) * 5) : 1;
@@ -862,14 +1370,9 @@ const domComboCount = document.getElementById('combo-count');
 const domP1Wins = document.getElementById('p1-wins');
 const domP2Wins = document.getElementById('p2-wins');
 
-// CPU combo indicator - uses the #cpu-combo-display / #cpu-combo-count markup
-// already present in index.html, which shares its CSS styling with the player's
-// #combo-display via style.css (same font, size, weight, glow, padding, etc.).
 const domCpuCombo = document.getElementById('cpu-combo-display');
 const domCpuComboCount = document.getElementById('cpu-combo-count');
 
-// Available-special indicators (LEVEL1/LEVEL2/ULTIMATE readiness) - optional
-// elements; updateSpecialTag() no-ops safely if either is missing from the HTML.
 const domP1SpecialTag = document.getElementById('p1-special-tag');
 const domP2SpecialTag = document.getElementById('p2-special-tag');
 
@@ -879,13 +1382,24 @@ function updateHealthUI() {
 }
 
 function updateEnergyUI() {
-    domP1Energy.style.width = `${player.energy}%`;
-    domP1Energy.style.background = player.energy >= 100 ? '#fff' : '#00ff88';
-    domP2Energy.style.width = `${enemy.energy}%`;
-    domP2Energy.style.background = enemy.energy >= 100 ? '#fff' : '#00ff88';
+    domP1Energy.style.width = `${100 - player.energy}%`;
+    domP2Energy.style.width = `${100 - enemy.energy}%`;
 
-    // Available-special indicator: shows the strongest move each fighter can
-    // currently afford, mirroring the 33/66/100 energy thresholds.
+    domP1Energy.style.background = '';
+    domP2Energy.style.background = '';
+
+    if (player.energy >= 100) {
+        domP1Energy.parentElement.classList.add('ultimate-glow');
+    } else {
+        domP1Energy.parentElement.classList.remove('ultimate-glow');
+    }
+
+    if (enemy.energy >= 100) {
+        domP2Energy.parentElement.classList.add('ultimate-glow');
+    } else {
+        domP2Energy.parentElement.classList.remove('ultimate-glow');
+    }
+
     updateSpecialTag(domP1SpecialTag, player.energy);
     updateSpecialTag(domP2SpecialTag, enemy.energy);
 }
@@ -909,11 +1423,9 @@ function updateSpecialTag(tagEl, energy) {
     }
 }
 
-// Player combo indicator (unchanged behavior, renamed from updateComboUI for clarity)
 function updatePlayerComboUI(count) {
     domComboCount.innerText = count;
     domCombo.classList.remove('hidden');
-    // Retrigger animation
     domCombo.style.animation = 'none';
     domCombo.offsetHeight; 
     domCombo.style.animation = 'slideRight 0.3s ease-out';
@@ -923,14 +1435,9 @@ function updatePlayerComboUI(count) {
     }, 1500);
 }
 
-// CPU combo indicator - logically separate from the player's (own element/state),
-// but visually matches it: same styling via shared CSS, same animation mechanism
-// and timing, just mirrored (slideLeft) so it moves naturally toward the center
-// from the CPU side.
 function updateCpuComboUI(count) {
     domCpuComboCount.innerText = count;
     domCpuCombo.classList.remove('hidden');
-    // Retrigger animation
     domCpuCombo.style.animation = 'none';
     domCpuCombo.offsetHeight;
     domCpuCombo.style.animation = 'slideLeft 0.3s ease-out';
@@ -963,7 +1470,8 @@ function startRound() {
     updateHealthUI();
     updateEnergyUI();
 
-    // Make sure both combo indicators start hidden each round
+    hitStopTimer = 0; 
+
     domCombo.classList.add('hidden');
     domCpuCombo.classList.add('hidden');
     
@@ -976,8 +1484,8 @@ function startRound() {
     document.getElementById('result-screen').classList.add('hidden');
     
     particles = [];
+    impactEffects = []; 
 
-    // 3, 2, 1, FIGHT Sequence
     showCenterMessage("ROUND " + roundCount);
     setTimeout(() => {
         if(currentState !== GAME_STATE.COUNTDOWN) return;
@@ -990,7 +1498,7 @@ function startRound() {
 function startTimer() {
     clearInterval(roundTimerId);
     roundTimerId = setInterval(() => {
-        if (currentState === GAME_STATE.PLAYING) {
+        if (currentState === GAME_STATE.PLAYING && hitStopTimer <= 0) {
             roundTime--;
             domTimer.innerText = roundTime;
             if (roundTime <= 0) checkRoundEnd(true);
@@ -1027,7 +1535,6 @@ function checkRoundEnd(timeUp = false) {
     }
 }
 
-// Menu Navigation Functions
 function pauseGame() {
     currentState = GAME_STATE.PAUSED;
     document.getElementById('pause-menu').classList.remove('hidden');
@@ -1036,7 +1543,7 @@ function pauseGame() {
 function resumeGame() {
     currentState = GAME_STATE.PLAYING;
     document.getElementById('pause-menu').classList.add('hidden');
-    lastTime = performance.now(); // Prevent large delta time jump
+    lastTime = performance.now(); 
 }
 
 function returnToMainMenu() {
@@ -1048,9 +1555,7 @@ function returnToMainMenu() {
     document.getElementById('main-menu').classList.remove('hidden');
 }
 
-// Button Listeners
 document.getElementById('btn-start').addEventListener('click', () => {
-    // Init audio context on first user interaction
     if(audioCtx.state === 'suspended') audioCtx.resume();
     resetMatch();
 });
@@ -1065,11 +1570,9 @@ document.getElementById('btn-rematch').addEventListener('click', resetMatch);
 // --- 6. RENDER & MAIN LOOP ---
 
 function drawBackground() {
-    // Cyberpunk/Grid floor background
     ctx.fillStyle = '#0b0b1a';
     ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
-    // Horizon line
     ctx.strokeStyle = '#ff00ea';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1077,7 +1580,6 @@ function drawBackground() {
     ctx.lineTo(GAME_WIDTH, FLOOR_Y);
     ctx.stroke();
 
-    // Floor grid
     ctx.strokeStyle = 'rgba(0, 243, 255, 0.1)';
     const timeOffset = (Date.now() / 20) % 50;
     for (let i = 0; i < GAME_WIDTH; i += 50) {
@@ -1087,7 +1589,6 @@ function drawBackground() {
         ctx.stroke();
     }
     
-    // Horizontal grid lines
     for (let i = 0; i < 150; i+=30) {
         ctx.beginPath();
         ctx.moveTo(0, FLOOR_Y + i);
@@ -1097,19 +1598,29 @@ function drawBackground() {
 }
 
 function update(dt) {
+    if (hitStopTimer > 0) {
+        hitStopTimer -= dt;
+        
+        particles.forEach(p => p.update(dt));
+        particles = particles.filter(p => p.life > 0);
+        updateImpactEffects(dt);
+        if (cameraShake > 0) cameraShake -= dt;
+        
+        return; 
+    }
+
     if (currentState === GAME_STATE.PLAYING || currentState === GAME_STATE.ROUND_OVER) {
         player.update(dt, enemy);
         enemy.update(dt, player);
         updateEnergyUI();
     } else if (currentState === GAME_STATE.ULTIMATE) {
-        // Normal player/CPU update is intentionally skipped here - this is what
-        // freezes both fighters for the duration of the Ultimate cinematic.
         updateUltimateCinematic(dt);
         updateEnergyUI();
     }
     
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => p.life > 0);
+    updateImpactEffects(dt);
 
     if (cameraShake > 0) cameraShake -= dt;
 }
@@ -1117,13 +1628,11 @@ function update(dt) {
 function draw() {
     ctx.save();
     
-    // Apply Camera Shake
     if (cameraShake > 0) {
         const shakeMag = cameraShake * 30;
         ctx.translate((Math.random()-0.5)*shakeMag, (Math.random()-0.5)*shakeMag);
     }
 
-    // Ultimate cinematic: subtle zoom toward the fighters for a "finisher" feel
     if (currentState === GAME_STATE.ULTIMATE && ultimateData) {
         const t = ultimateData.timer;
         let zoom = 1;
@@ -1139,14 +1648,16 @@ function draw() {
 
     drawBackground();
     
-    // Draw entities
     player.draw(ctx);
     enemy.draw(ctx);
     
-    // Draw particles
     particles.forEach(p => p.draw(ctx));
 
+    drawImpactEffects(ctx);
+
     ctx.restore();
+
+    drawScreenFlashes(ctx);
 
     if (currentState === GAME_STATE.ULTIMATE) {
         drawUltimateOverlay(ctx);
@@ -1155,19 +1666,17 @@ function draw() {
 
 function gameLoop(timestamp) {
     let dt = (timestamp - lastTime) / 1000;
-    if (dt > 0.1) dt = 0.1; // Cap dt to prevent physics explosions on tab switch
+    if (dt > 0.1) dt = 0.1; 
     lastTime = timestamp;
 
     if (currentState !== GAME_STATE.MENU && currentState !== GAME_STATE.PAUSED) {
         update(dt);
         draw();
     } else if (currentState === GAME_STATE.MENU) {
-        // Just draw empty background for menu
         drawBackground();
     }
 
     animationFrameId = requestAnimationFrame(gameLoop);
 }
 
-// Start Engine
 requestAnimationFrame(gameLoop);
